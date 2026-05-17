@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+target="${1:-}"
+
+if [[ -z "$target" ]]; then
+  printf 'Usage: mpm-open FILE\n' >&2
+  exit 2
+fi
+
+if [[ ! -e "$target" ]]; then
+  printf 'File not found: %s\n' "$target" >&2
+  exit 1
+fi
+
+mpm_pkg_bin="${MPM_PKG_BIN:-$HOME/.local/bin/mpm-pkg}"
+
+if ! command -v "$mpm_pkg_bin" >/dev/null 2>&1 && [[ ! -x "$mpm_pkg_bin" ]]; then
+  printf 'mpm-pkg not found: %s\n' "$mpm_pkg_bin" >&2
+  exit 1
+fi
+
+printf 'MPM package opener\n'
+printf '\n'
+"$mpm_pkg_bin" explain "$target"
+printf '\n'
+printf 'This will install through MPM policy, not by unpacking into Arch directly.\n'
+printf 'Continue? [y/N] '
+read -r answer
+
+case "$answer" in
+  y|Y|yes|YES)
+    "$mpm_pkg_bin" install "$target"
+    ;;
+  *)
+    printf 'Cancelled.\n'
+    exit 0
+    ;;
+esac
+
+printf '\nDone. Press Enter to close this window.'
+read -r _ || true

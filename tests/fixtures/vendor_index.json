@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "cursor",
+      "name": "Cursor",
+      "summary": "AI code editor.",
+      "description": "Vendor-distributed editor with AppImage, DEB, and RPM artifacts.",
+      "homepage": "https://cursor.com/",
+      "publisher": "Anysphere",
+      "license": "Proprietary",
+      "aliases": ["cursor ai", "cursor editor"],
+      "trust": "vendor-official",
+      "update_policy": "manual",
+      "uninstall_policy": "mpm-pkg-managed-registration",
+      "routes": [
+        {
+          "id": "appimage-x86_64",
+          "kind": "appimage",
+          "url": "https://vendor.example/Cursor.AppImage",
+          "version": "latest",
+          "channel": "stable",
+          "arch": ["x86_64"],
+          "app_id": "cursor",
+          "source": "Cursor vendor AppImage",
+          "sha256": "",
+          "warnings": ["Vendor terms apply."]
+        },
+        {
+          "id": "deb-amd64",
+          "kind": "deb",
+          "url": "https://vendor.example/cursor.deb",
+          "version": "latest",
+          "channel": "stable",
+          "arch": ["amd64"],
+          "app_id": "cursor",
+          "box": "mpm-ubuntu-apps",
+          "source": "Cursor vendor DEB",
+          "sha256": ""
+        },
+        {
+          "id": "rpm-x86_64",
+          "kind": "rpm",
+          "url": "https://vendor.example/cursor.rpm",
+          "version": "latest",
+          "channel": "stable",
+          "arch": ["x86_64"],
+          "app_id": "cursor",
+          "box": "mpm-fedora-apps",
+          "source": "Cursor vendor RPM",
+          "sha256": ""
+        }
+      ]
+    }
+  ]
+}

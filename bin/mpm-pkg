@@ -1,0 +1,1760 @@
+#!/usr/bin/env python3
+import argparse
+from dataclasses import dataclass
+import json
+import os
+import re
+import shutil
+import shlex
+import sqlite3
+import subprocess
+import sys
+import time
+import urllib.parse
+from pathlib import Path
+
+
+APP_NAME = "mpm-pkg"
+BACKENDS = {
+    "pacman",
+    "aur",
+    "flatpak",
+    "appimage",
+    "distrobox-deb",
+    "distrobox-rpm",
+    "distrobox-apt",
+    "distrobox-dnf",
+}
+
+STANDARD_BOXES = {
+    "ubuntu": os.environ.get("MPM_UBUNTU_BOX", "mpm-ubuntu-apps"),
+    "debian": os.environ.get("MPM_DEBIAN_BOX", "mpm-debian-apps"),
+    "fedora": os.environ.get("MPM_FEDORA_BOX", "mpm-fedora-apps"),
+}
+
+MISSING_LIBRARY_PACKAGES = {
+    "ubuntu": {
+        "libasound.so.2": "libasound2t64",
+    },
+    "debian": {
+        "libasound.so.2": "libasound2",
+    },
+    "fedora": {
+        "libasound.so.2": "alsa-lib",
+    },
+}
+
+ELECTRON_HINTS = (
+    "electron",
+    "chromium",
+    "chrome",
+    "app.asar",
+    "cursor",
+    "opencode",
+    "tauri",
+)
+
+
+@dataclass
+class DesktopEntry:
+    path: Path
+    values: dict[str, str]
+
+    @property
+    def desktop_id(self) -> str:
+        return self.path.name
+
+    @property
+    def stem(self) -> str:
+        return self.path.stem
+
+    @property
+    def name(self) -> str:
+        return self.values.get("Name", self.stem)
+
+    @property
+    def exec_line(self) -> str:
+        return self.values.get("Exec", "")
+
+    @property
+    def no_display(self) -> bool:
+        return self.values.get("NoDisplay", "").strip().lower() == "true"
+
+
+@dataclass
+class AppDiagnosis:
+    target: str
+    desktop: DesktopEntry
+    box: str | None
+    app_id: str | None
+    family: str | None
+    source_desktop: str | None
+    source_exec: str | None
+    executable: str | None
+    package_name: str | None
+    ldd_output: str
+    missing_libraries: list[str]
+    electron_like: bool
+    url_bridge_status: dict[str, str]
+    log_hints: list[str]
+
+
+@dataclass
+class InstallRecord:
+    id: int
+    target: str
+    backend: str
+    kind: str
+    source: str
+    app_id: str | None
+    installed_at: int
+
+
+@dataclass
+class UninstallPlan:
+    record: InstallRecord
+    commands: list[list[str]]
+    notes: list[str]
+    diagnostics: list[str]
+    data_policy: str = "user data is preserved; package-managed files and MalikOS launcher registrations only"
+
+
+def xdg_data_home() -> Path:
+    return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
+
+
+def state_dir() -> Path:
+    return xdg_data_home() / "mpm" / "mpm-pkg"
+
+
+def db_path() -> Path:
+    return state_dir() / "installed.sqlite"
+
+
+def repo_root() -> Path | None:
+    current = Path(__file__).resolve()
+    for parent in [current.parent, *current.parents]:
+        if (parent / "scripts/distrobox/mpm-distrobox-bridge.sh").exists():
+            return parent
+    return None
+
+
+def bridge_script() -> Path:
+    override = os.environ.get("MPM_DISTROBOX_BRIDGE")
+    if override:
+        return Path(override)
+
+    root = repo_root()
+    if root:
+        return root / "scripts/distrobox/mpm-distrobox-bridge.sh"
+
+    candidates = [
+        Path.home() / ".local/lib/mpm/mpm-distrobox-bridge.sh",
+        Path("/usr/lib/mpm/mpm-distrobox-bridge.sh"),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+def run(argv: list[str], *, dry_run: bool = False) -> None:
+    print("+ " + " ".join(str(arg) for arg in argv))
+    if dry_run:
+        return
+    subprocess.run([str(arg) for arg in argv], check=True)
+
+
+def capture(argv: list[str]) -> str:
+    return subprocess.check_output([str(arg) for arg in argv], text=True).strip()
+
+
+def command_status(argv: list[str]) -> int | None:
+    if not argv or not shutil.which(argv[0]):
+        return None
+    proc = subprocess.run([str(arg) for arg in argv], text=True, capture_output=True, check=False)
+    return proc.returncode
+
+
+def command_succeeds(argv: list[str]) -> bool | None:
+    status = command_status(argv)
+    if status is None:
+        return None
+    return status == 0
+
+
+def ensure_db() -> sqlite3.Connection:
+    state_dir().mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path())
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS installs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          target TEXT NOT NULL,
+          backend TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          source TEXT NOT NULL,
+          app_id TEXT,
+          installed_at INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS repairs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          target TEXT NOT NULL,
+          desktop_id TEXT,
+          box TEXT,
+          action TEXT NOT NULL,
+          repaired_at INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS uninstalls (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          install_id INTEGER,
+          target TEXT NOT NULL,
+          backend TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          source TEXT NOT NULL,
+          app_id TEXT,
+          plan TEXT NOT NULL,
+          result TEXT NOT NULL,
+          uninstalled_at INTEGER NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    return conn
+
+
+def record_install(target: str, backend: str, kind: str, source: str, app_id: str | None) -> None:
+    conn = ensure_db()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO installs (target, backend, kind, source, app_id, installed_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (target, backend, kind, source, app_id, int(time.time())),
+        )
+
+
+def record_repair(target: str, desktop_id: str | None, box: str | None, action: str) -> None:
+    conn = ensure_db()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO repairs (target, desktop_id, box, action, repaired_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (target, desktop_id, box, action, int(time.time())),
+        )
+
+
+def record_uninstall(plan: UninstallPlan, result: str) -> None:
+    conn = ensure_db()
+    record = plan.record
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO uninstalls
+              (install_id, target, backend, kind, source, app_id, plan, result, uninstalled_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record.id,
+                record.target,
+                record.backend,
+                record.kind,
+                record.source,
+                record.app_id,
+                format_uninstall_plan(plan),
+                result,
+                int(time.time()),
+            ),
+        )
+
+
+def row_to_install_record(row: sqlite3.Row | tuple[object, ...]) -> InstallRecord:
+    return InstallRecord(
+        id=int(row[0]),
+        target=str(row[1]),
+        backend=str(row[2]),
+        kind=str(row[3]),
+        source=str(row[4]),
+        app_id=str(row[5]) if row[5] else None,
+        installed_at=int(row[6]),
+    )
+
+
+def is_url(value: str) -> bool:
+    parsed = urllib.parse.urlparse(value)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def target_name_from_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    name = Path(parsed.path).name
+    return name or "downloaded-package"
+
+
+def detect_target(target: str) -> dict[str, str]:
+    lower = target.lower()
+    suffixes = (".deb", ".rpm", ".appimage")
+    looks_like_file = Path(target).exists() or "/" in target or lower.endswith(suffixes)
+    source = "url" if is_url(target) else "file" if looks_like_file else "name"
+    inspect_name = target_name_from_url(target).lower() if source == "url" else lower
+
+    if inspect_name.endswith(".deb"):
+        return {"kind": "deb", "source": source, "backend": "distrobox-deb"}
+    if inspect_name.endswith(".rpm"):
+        return {"kind": "rpm", "source": source, "backend": "distrobox-rpm"}
+    if inspect_name.endswith(".appimage"):
+        return {"kind": "appimage", "source": source, "backend": "appimage"}
+    if source == "url":
+        return {"kind": "url", "source": source, "backend": "unknown"}
+    return {"kind": "name", "source": source, "backend": "pacman"}
+
+
+def choose_backend(target: str, forced_backend: str | None) -> dict[str, str]:
+    detected = detect_target(target)
+    if forced_backend:
+        if forced_backend not in BACKENDS:
+            raise SystemExit(f"unknown backend: {forced_backend}")
+        detected["backend"] = forced_backend
+    return detected
+
+
+def explain(target: str, forced_backend: str | None = None) -> str:
+    detected = choose_backend(target, forced_backend)
+    backend = detected["backend"]
+    kind = detected["kind"]
+    source = detected["source"]
+
+    reasons = {
+        "distrobox-deb": "DEB vendor package: install inside the Ubuntu Distrobox app container and keep Arch clean.",
+        "distrobox-rpm": "RPM vendor package: install inside the Fedora Distrobox app container and keep Arch clean.",
+        "distrobox-apt": "APT package route: discover inside a Debian/Ubuntu Distrobox app container. Install support is planned after MVP 0.11.",
+        "distrobox-dnf": "DNF package route: discover inside a Fedora Distrobox app container. Install support is planned after MVP 0.11.",
+        "appimage": "AppImage file: register it in the MPM local AppImage area and create desktop integration.",
+        "pacman": "Package name: MVP policy defaults to pacman for host packages unless a backend is forced.",
+        "aur": "AUR backend forced: use the configured AUR helper for Arch community packages.",
+        "flatpak": "Flatpak backend forced: install through user Flathub/Flatpak for isolated GUI apps.",
+        "unknown": "URL without a known package suffix: download is not safe to route automatically yet.",
+    }
+
+    return (
+        f"target: {target}\n"
+        f"source: {source}\n"
+        f"kind: {kind}\n"
+        f"backend: {backend}\n"
+        f"reason: {reasons.get(backend, 'No policy reason registered.')}"
+    )
+
+
+def download_url(url: str, *, dry_run: bool = False) -> Path:
+    name = target_name_from_url(url)
+    dest = state_dir() / "downloads" / name
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    run(["curl", "-L", "--fail", "-o", dest, url], dry_run=dry_run)
+    return dest
+
+
+def ensure_snapper_root_ready(*, dry_run: bool = False) -> None:
+    if dry_run:
+        return
+    if not shutil.which("snapper"):
+        raise SystemExit("Host package install requires Snapper, but snapper is not installed.")
+    if not Path("/etc/snapper/configs/root").exists():
+        raise SystemExit("Host package install requires Snapper root config at /etc/snapper/configs/root.")
+
+
+def create_pre_host_snapshot(target: str, backend: str, *, dry_run: bool = False) -> None:
+    ensure_snapper_root_ready(dry_run=dry_run)
+    description = f"pre-mpm-pkg-{backend}: {target}"
+    run(
+        [
+            "sudo",
+            "snapper",
+            "-c",
+            "root",
+            "create",
+            "--cleanup-algorithm",
+            "number",
+            "--description",
+            description,
+        ],
+        dry_run=dry_run,
+    )
+
+
+def install_pacman(target: str, *, dry_run: bool) -> None:
+    create_pre_host_snapshot(target, "pacman", dry_run=dry_run)
+    run(["sudo", "pacman", "-S", "--needed", "--noconfirm", target], dry_run=dry_run)
+
+
+def aur_helper() -> str:
+    for helper in ("paru", "yay"):
+        path = shutil.which(helper)
+        if path:
+            return path
+    raise SystemExit("AUR backend requested, but neither paru nor yay is installed.")
+
+
+def aur_install_args(helper: str, target: str) -> list[str]:
+    args = [helper, "-S", "--needed", "--noconfirm"]
+    helper_name = Path(helper).name
+    if helper_name == "paru":
+        args.append("--skipreview")
+    elif helper_name == "yay":
+        args.extend(["--answerclean", "None", "--answerdiff", "None", "--answeredit", "None"])
+    args.append(target)
+    return args
+
+
+def install_aur(target: str, *, dry_run: bool) -> None:
+    create_pre_host_snapshot(target, "aur", dry_run=dry_run)
+    run(aur_install_args(aur_helper(), target), dry_run=dry_run)
+
+
+def install_flatpak(target: str, *, dry_run: bool) -> None:
+    if not shutil.which("flatpak"):
+        raise SystemExit("Flatpak backend requested, but flatpak is not installed.")
+    run(
+        [
+            "flatpak",
+            "--user",
+            "remote-add",
+            "--if-not-exists",
+            "flathub",
+            "https://dl.flathub.org/repo/flathub.flatpakrepo",
+        ],
+        dry_run=dry_run,
+    )
+    run(["flatpak", "--user", "install", "-y", "flathub", target], dry_run=dry_run)
+
+
+def install_appimage(path: Path, *, app_id: str | None, dry_run: bool) -> Path:
+    app_dir = xdg_data_home() / "mpm" / "appimages"
+    applications_dir = xdg_data_home() / "applications"
+    app_dir.mkdir(parents=True, exist_ok=True)
+    applications_dir.mkdir(parents=True, exist_ok=True)
+
+    target = app_dir / path.name
+    run(["install", "-m", "0755", path, target], dry_run=dry_run)
+
+    launcher_id = app_id or path.stem.lower().replace(" ", "-")
+    desktop_file = applications_dir / f"mpm-appimage-{launcher_id}.desktop"
+    desktop_text = (
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        f"Name={path.stem}\n"
+        f"Exec={target}\n"
+        "Terminal=false\n"
+        "Categories=Utility;\n"
+        f"X-MalikOS-Backend=appimage\n"
+    )
+    print(f"+ write {desktop_file}")
+    if not dry_run:
+        desktop_file.write_text(desktop_text, encoding="utf-8")
+        run(["chmod", "0644", desktop_file], dry_run=False)
+        repair_kde(dry_run=False)
+    return target
+
+
+def install_distrobox_file(backend: str, path: Path, app_id: str | None, *, dry_run: bool) -> None:
+    script = bridge_script()
+    if not script.exists():
+        raise SystemExit(f"Distrobox bridge script not found: {script}")
+
+    command = "install-deb" if backend == "distrobox-deb" else "install-rpm"
+    argv = [script, command, path]
+    if app_id:
+        argv.append(app_id)
+    run(argv, dry_run=dry_run)
+
+
+def normalize_token(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
+def desktop_search_dirs() -> list[Path]:
+    dirs = [
+        xdg_data_home() / "applications",
+        Path.home() / ".local/share/applications",
+    ]
+    for base in os.environ.get("XDG_DATA_DIRS", "/usr/local/share:/usr/share").split(":"):
+        if base:
+            dirs.append(Path(base) / "applications")
+
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for directory in dirs:
+        if directory not in seen:
+            seen.add(directory)
+            unique.append(directory)
+    return unique
+
+
+def parse_desktop_text(path: Path, text: str) -> DesktopEntry:
+    values: dict[str, str] = {}
+    in_desktop_entry = False
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            in_desktop_entry = line == "[Desktop Entry]"
+            continue
+        if not in_desktop_entry or "=" not in raw_line:
+            continue
+        key, value = raw_line.split("=", 1)
+        values[key.strip()] = value.strip()
+    return DesktopEntry(path=path, values=values)
+
+
+def read_desktop(path: Path) -> DesktopEntry:
+    return parse_desktop_text(path, path.read_text(encoding="utf-8", errors="replace"))
+
+
+def all_desktop_entries() -> list[DesktopEntry]:
+    entries: list[DesktopEntry] = []
+    seen: set[Path] = set()
+    for directory in desktop_search_dirs():
+        if not directory.exists():
+            continue
+        for path in sorted(directory.glob("*.desktop")):
+            resolved = path.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            try:
+                entries.append(read_desktop(path))
+            except OSError:
+                continue
+    return entries
+
+
+def desktop_match_score(entry: DesktopEntry, target: str) -> int:
+    target_path = Path(target)
+    target_norm = normalize_token(target)
+    names = {
+        entry.desktop_id,
+        entry.stem,
+        entry.name,
+        entry.values.get("StartupWMClass", ""),
+    }
+    normalized_names = {normalize_token(name) for name in names if name}
+
+    if target_path.name == entry.desktop_id:
+        return 1000
+    if target == str(entry.path):
+        return 1000
+    if target_norm in normalized_names:
+        return 900
+    if target_norm and any(name.startswith(target_norm) for name in normalized_names):
+        return 700
+    if target_norm and any(target_norm in name for name in normalized_names):
+        return 500
+
+    if target_norm == "opencode" and "opencode" in normalize_token(entry.desktop_id + entry.name):
+        return 650
+    if target_norm == "cursor" and "cursor" in normalize_token(entry.desktop_id + entry.name):
+        return 650
+    return 0
+
+
+def resolve_desktop_entry(target: str) -> DesktopEntry:
+    explicit_path = Path(target).expanduser()
+    if explicit_path.exists():
+        return read_desktop(explicit_path)
+
+    matches = [
+        (desktop_match_score(entry, target), entry.no_display, entry)
+        for entry in all_desktop_entries()
+        if desktop_match_score(entry, target) > 0
+    ]
+    if not matches:
+        raise SystemExit(f"desktop launcher not found for: {target}")
+
+    matches.sort(key=lambda item: (-item[0], item[1], str(item[2].path)))
+    return matches[0][2]
+
+
+def infer_box_and_app_id(entry: DesktopEntry) -> tuple[str | None, str | None]:
+    filename = entry.desktop_id
+    for box in STANDARD_BOXES.values():
+        prefix = f"{box}-"
+        if filename.startswith(prefix) and filename.endswith(".desktop"):
+            return box, filename[len(prefix) : -len(".desktop")]
+
+    exec_line = entry.exec_line
+    for box in STANDARD_BOXES.values():
+        if box in exec_line:
+            app_id = None
+            if filename.endswith(".desktop"):
+                app_id = filename[: -len(".desktop")]
+            return box, app_id
+    return None, None
+
+
+def box_capture(box: str, script: str, *args: str) -> tuple[int, str, str]:
+    try:
+        proc = subprocess.run(
+            ["distrobox", "enter", "--name", box, "--", "bash", "-lc", script, "_", *args],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        return 127, "", str(exc)
+    return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+
+
+def box_run(box: str, script: str, *args: str, dry_run: bool = False) -> None:
+    run(["distrobox", "enter", "--name", box, "--", "bash", "-lc", script, "_", *args], dry_run=dry_run)
+
+
+def box_family(box: str | None) -> str | None:
+    if not box:
+        return None
+    for family, standard_box in STANDARD_BOXES.items():
+        if box == standard_box or family in box:
+            return family
+
+    code, stdout, _ = box_capture(box, 'source /etc/os-release 2>/dev/null || true; printf "%s" "${ID:-unknown}"')
+    if code != 0 or not stdout:
+        return None
+    if stdout.startswith("ubuntu"):
+        return "ubuntu"
+    if stdout.startswith("debian"):
+        return "debian"
+    if stdout.startswith("fedora"):
+        return "fedora"
+    return stdout
+
+
+def find_source_desktop_in_box(box: str, app_id: str | None) -> str | None:
+    if not app_id:
+        return None
+    desktop_name = app_id if app_id.endswith(".desktop") else f"{app_id}.desktop"
+    code, stdout, _ = box_capture(
+        box,
+        r'''
+        set -euo pipefail
+        name="$1"
+        for dir in "$HOME/.local/share/applications" /usr/local/share/applications /usr/share/applications; do
+          path="$dir/$name"
+          if [[ -f "$path" ]]; then
+            printf '%s\n' "$path"
+            exit 0
+          fi
+        done
+        find "$HOME/.local/share/applications" /usr/local/share/applications /usr/share/applications \
+          -maxdepth 1 -type f -name "$name" -print -quit 2>/dev/null || true
+        ''',
+        desktop_name,
+    )
+    if code == 0 and stdout:
+        return stdout.splitlines()[0]
+    return None
+
+
+def read_box_file(box: str, path: str) -> str:
+    code, stdout, _ = box_capture(box, 'cat "$1" 2>/dev/null || true', path)
+    if code != 0:
+        return ""
+    return stdout
+
+
+def executable_from_exec(exec_line: str) -> str | None:
+    if not exec_line:
+        return None
+    try:
+        tokens = shlex.split(exec_line)
+    except ValueError:
+        tokens = exec_line.split()
+
+    if not tokens:
+        return None
+
+    index = 0
+    if tokens[index] == "env":
+        index += 1
+        while index < len(tokens):
+            token = tokens[index]
+            if token.startswith("-"):
+                index += 1
+                continue
+            if "=" in token and not token.startswith("%"):
+                index += 1
+                continue
+            break
+
+    while index < len(tokens):
+        token = tokens[index]
+        if token.startswith("%"):
+            index += 1
+            continue
+        return token
+    return None
+
+
+def resolve_executable_in_box(box: str, command: str | None) -> str | None:
+    if not command:
+        return None
+    code, stdout, _ = box_capture(
+        box,
+        r'''
+        set -euo pipefail
+        cmd="$1"
+        if [[ "$cmd" == /* && -e "$cmd" ]]; then
+          printf '%s\n' "$cmd"
+          exit 0
+        fi
+        command -v "$cmd" 2>/dev/null || true
+        ''',
+        command,
+    )
+    if code == 0 and stdout:
+        return stdout.splitlines()[0]
+    return command
+
+
+def package_owner_in_box(box: str, family: str | None, path: str | None) -> str | None:
+    if not path:
+        return None
+    if family in {"ubuntu", "debian"}:
+        code, stdout, _ = box_capture(box, 'dpkg -S "$1" 2>/dev/null | head -n1 | cut -d: -f1 || true', path)
+    elif family == "fedora":
+        code, stdout, _ = box_capture(box, 'rpm -qf "$1" 2>/dev/null || true', path)
+    else:
+        return None
+    if code == 0 and stdout:
+        return stdout.splitlines()[0]
+    return None
+
+
+def ldd_in_box(box: str, executable: str | None) -> str:
+    if not executable:
+        return ""
+    code, stdout, stderr = box_capture(
+        box,
+        r'''
+        set -euo pipefail
+        exe="$1"
+        if [[ ! -e "$exe" ]]; then
+          exit 0
+        fi
+        ldd "$exe" 2>&1 || true
+        ''',
+        executable,
+    )
+    if code != 0:
+        return stderr
+    return stdout
+
+
+def missing_libraries_from_ldd(ldd_output: str) -> list[str]:
+    missing: set[str] = set()
+    for line in ldd_output.splitlines():
+        match = re.search(r"^\s*(\S+)\s+=>\s+not found\b", line)
+        if match:
+            missing.add(match.group(1))
+    return sorted(missing)
+
+
+def url_bridge_status(box: str | None) -> dict[str, str]:
+    opener = Path.home() / ".local/bin/mpm-host-open-url"
+    status = {
+        "host-opener": "ok" if opener.exists() and os.access(opener, os.X_OK) else "missing",
+        "box-xdg-open": "not-a-distrobox-app",
+    }
+    if not box:
+        return status
+    code, stdout, _ = box_capture(
+        box,
+        r'''
+        set -euo pipefail
+        target="$HOME/.local/bin/mpm-host-open-url"
+        if [[ -L /usr/local/bin/xdg-open ]] && [[ "$(readlink -f /usr/local/bin/xdg-open)" == "$target" ]]; then
+          printf 'ok'
+        elif [[ -e /usr/local/bin/xdg-open ]]; then
+          printf 'custom'
+        else
+          printf 'missing'
+        fi
+        ''',
+    )
+    if code == 0 and stdout:
+        status["box-xdg-open"] = stdout
+    return status
+
+
+def is_electron_like(diagnosis_text: str) -> bool:
+    lowered = diagnosis_text.lower()
+    return any(hint in lowered for hint in ELECTRON_HINTS)
+
+
+def recent_log_hints(target: str, desktop: DesktopEntry, app_id: str | None) -> list[str]:
+    if not shutil.which("journalctl"):
+        return []
+    proc = subprocess.run(
+        ["journalctl", "--user", "-n", "240", "--no-pager"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return []
+
+    tokens = [
+        normalize_token(token)
+        for token in [
+            target,
+            desktop.name,
+            desktop.stem,
+            app_id or "",
+            known_app_key_from_text(desktop.desktop_id + " " + desktop.name),
+        ]
+        if token
+    ]
+    tokens = [token for token in tokens if len(token) >= 4]
+    if not tokens:
+        return []
+
+    hints: list[str] = []
+    actionable = re.compile(r"(error|failed|failure|missing|not found|sandbox|gpu|lib[a-z0-9_.-]+)", re.I)
+    for line in proc.stdout.splitlines():
+        normalized_line = normalize_token(line)
+        if actionable.search(line) and any(token in normalized_line for token in tokens):
+            hints.append(line[-240:])
+    return hints[-6:]
+
+
+def known_app_key_from_text(text: str) -> str:
+    normalized = normalize_token(text)
+    if "opencode" in normalized:
+        return "opencode"
+    if "cursor" in normalized:
+        return "cursor"
+    return ""
+
+
+def diagnose_app(target: str) -> AppDiagnosis:
+    desktop = resolve_desktop_entry(target)
+    box, app_id = infer_box_and_app_id(desktop)
+    family = box_family(box)
+    source_desktop = find_source_desktop_in_box(box, app_id) if box else None
+    source_text = read_box_file(box, source_desktop) if box and source_desktop else ""
+    source_entry = parse_desktop_text(Path(source_desktop or ""), source_text) if source_text else None
+    source_exec = source_entry.exec_line if source_entry else None
+    command = executable_from_exec(source_exec or desktop.exec_line)
+    executable = resolve_executable_in_box(box, command) if box else command
+    package_name = package_owner_in_box(box, family, source_desktop or executable) if box else None
+    ldd_output = ldd_in_box(box, executable) if box else ""
+    missing_libraries = missing_libraries_from_ldd(ldd_output)
+    diagnosis_text = " ".join(
+        item
+        for item in [
+            desktop.desktop_id,
+            desktop.name,
+            desktop.exec_line,
+            source_desktop,
+            source_exec,
+            executable,
+            package_name,
+        ]
+        if item
+    )
+    electron_like = is_electron_like(diagnosis_text)
+    return AppDiagnosis(
+        target=target,
+        desktop=desktop,
+        box=box,
+        app_id=app_id,
+        family=family,
+        source_desktop=source_desktop,
+        source_exec=source_exec,
+        executable=executable,
+        package_name=package_name,
+        ldd_output=ldd_output,
+        missing_libraries=missing_libraries,
+        electron_like=electron_like,
+        url_bridge_status=url_bridge_status(box),
+        log_hints=recent_log_hints(target, desktop, app_id),
+    )
+
+
+def known_app_key(diagnosis: AppDiagnosis) -> str:
+    text = (
+        " ".join(
+            item
+            for item in [
+                diagnosis.desktop.desktop_id,
+                diagnosis.desktop.name,
+                diagnosis.app_id or "",
+                diagnosis.package_name or "",
+            ]
+            if item
+        )
+    )
+    return known_app_key_from_text(text)
+
+
+def repair_packages_for_diagnosis(diagnosis: AppDiagnosis) -> list[str]:
+    family = diagnosis.family
+    if not family:
+        return []
+    packages: set[str] = set()
+    library_map = MISSING_LIBRARY_PACKAGES.get(family, {})
+    for library in diagnosis.missing_libraries:
+        package = library_map.get(library)
+        if package:
+            packages.add(package)
+
+    if known_app_key(diagnosis) == "opencode":
+        package = library_map.get("libasound.so.2")
+        if package:
+            packages.add(package)
+    return sorted(packages)
+
+
+def launcher_repair_profile(diagnosis: AppDiagnosis) -> tuple[dict[str, str], list[str]]:
+    key = known_app_key(diagnosis)
+    if key == "opencode":
+        return {}, ["--no-sandbox", "--disable-gpu"]
+    if key == "cursor":
+        return {
+            "BROWSER": str(Path.home() / ".local/bin/mpm-host-open-url"),
+            "ELECTRON_OZONE_PLATFORM_HINT": "x11",
+        }, ["--disable-gpu"]
+    return {}, []
+
+
+def install_box_packages(box: str, family: str | None, packages: list[str], *, dry_run: bool) -> None:
+    if not packages:
+        return
+    quoted_packages = " ".join(shlex.quote(package) for package in packages)
+    if family in {"ubuntu", "debian"}:
+        script = f"sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y {quoted_packages}"
+    elif family == "fedora":
+        script = f"sudo dnf install -y {quoted_packages}"
+    else:
+        raise SystemExit(f"unknown Distrobox package family for repair: {family}")
+    box_run(box, script, dry_run=dry_run)
+
+
+def patch_exec_line(exec_line: str, env_vars: dict[str, str], flags: list[str]) -> str:
+    try:
+        tokens = shlex.split(exec_line)
+    except ValueError:
+        tokens = exec_line.split()
+    if not tokens:
+        return exec_line
+
+    def is_env_assignment(token: str) -> bool:
+        return "=" in token and not token.startswith("%") and not token.startswith("-")
+
+    def add_env_vars(tokens_list: list[str], start_index: int) -> None:
+        if tokens_list[start_index] != "env":
+            tokens_list.insert(start_index, "env")
+        insert_at = start_index + 1
+        while insert_at < len(tokens_list) and is_env_assignment(tokens_list[insert_at]):
+            insert_at += 1
+        existing_env = {
+            token.split("=", 1)[0]
+            for token in tokens_list[start_index + 1 : insert_at]
+            if is_env_assignment(token)
+        }
+        for key, value in env_vars.items():
+            if key not in existing_env:
+                tokens_list.insert(insert_at, f"{key}={value}")
+                insert_at += 1
+
+    if env_vars:
+        if (
+            len(tokens) > 1
+            and tokens[0] == "env"
+            and "distrobox-enter" in Path(tokens[1]).name
+        ):
+            tokens.pop(0)
+
+        try:
+            delimiter_index = tokens.index("--")
+        except ValueError:
+            delimiter_index = -1
+
+        if delimiter_index >= 0 and delimiter_index + 1 < len(tokens):
+            add_env_vars(tokens, delimiter_index + 1)
+        else:
+            add_env_vars(tokens, 0)
+
+    existing_tokens = set(tokens)
+    field_code_index = next((index for index, token in enumerate(tokens) if token.startswith("%")), len(tokens))
+    for flag in flags:
+        if flag not in existing_tokens:
+            tokens.insert(field_code_index, flag)
+            field_code_index += 1
+            existing_tokens.add(flag)
+
+    return " ".join(shlex.quote(token) for token in tokens)
+
+
+def patch_desktop_exec(path: Path, env_vars: dict[str, str], flags: list[str], *, dry_run: bool) -> bool:
+    if not env_vars and not flags:
+        return False
+    text = path.read_text(encoding="utf-8", errors="replace")
+    lines = text.splitlines()
+    changed = False
+    for index, line in enumerate(lines):
+        if not line.startswith("Exec="):
+            continue
+        current = line.split("=", 1)[1]
+        patched = patch_exec_line(current, env_vars, flags)
+        if patched != current:
+            lines[index] = f"Exec={patched}"
+            changed = True
+        break
+    if changed:
+        print(f"+ patch Exec in {path}")
+        if not dry_run:
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return changed
+
+
+def ensure_host_url_opener(*, dry_run: bool) -> bool:
+    target = Path.home() / ".local/bin/mpm-host-open-url"
+    if target.exists() and os.access(target, os.X_OK):
+        return False
+
+    root = repo_root()
+    source = root / "bin/mpm-host-open-url" if root else None
+    if not source or not source.exists():
+        raise SystemExit(f"host URL opener is missing and no repo source was found: {target}")
+
+    print(f"+ install {source} {target}")
+    if not dry_run:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        target.chmod(0o755)
+    return True
+
+
+def repair_url_bridge_in_box(box: str, *, dry_run: bool) -> None:
+    box_run(
+        box,
+        r'''
+        set -euo pipefail
+        target="$HOME/.local/bin/mpm-host-open-url"
+        test -x "$target"
+        sudo mkdir -p /usr/local/bin
+        sudo ln -sf "$target" /usr/local/bin/xdg-open
+        ''',
+        dry_run=dry_run,
+    )
+
+
+def print_diagnosis(diagnosis: AppDiagnosis) -> None:
+    print(f"target: {diagnosis.target}")
+    print(f"name: {diagnosis.desktop.name}")
+    print(f"desktop-id: {diagnosis.desktop.desktop_id}")
+    print(f"desktop-file: {diagnosis.desktop.path}")
+    print(f"backend: {'distrobox-export' if diagnosis.box else 'desktop'}")
+    print(f"box: {diagnosis.box or 'none'}")
+    print(f"family: {diagnosis.family or 'unknown'}")
+    print(f"app-id: {diagnosis.app_id or 'unknown'}")
+    print(f"source-desktop: {diagnosis.source_desktop or 'unknown'}")
+    print(f"source-exec: {diagnosis.source_exec or diagnosis.desktop.exec_line or 'unknown'}")
+    print(f"executable: {diagnosis.executable or 'unknown'}")
+    print(f"package: {diagnosis.package_name or 'unknown'}")
+    if diagnosis.missing_libraries:
+        print("missing-libraries: " + ", ".join(diagnosis.missing_libraries))
+    else:
+        print("missing-libraries: none")
+    print(f"electron-like: {'yes' if diagnosis.electron_like else 'no'}")
+    print(
+        "url-bridge: "
+        f"host-opener={diagnosis.url_bridge_status.get('host-opener', 'unknown')}, "
+        f"box-xdg-open={diagnosis.url_bridge_status.get('box-xdg-open', 'unknown')}"
+    )
+    if diagnosis.log_hints:
+        print("log-hints:")
+        for line in diagnosis.log_hints:
+            print(f"  - {line}")
+    else:
+        print("log-hints: none")
+
+    packages = repair_packages_for_diagnosis(diagnosis)
+    env_vars, flags = launcher_repair_profile(diagnosis)
+    plan: list[str] = []
+    if packages:
+        plan.append(f"install box packages: {', '.join(packages)}")
+    if env_vars or flags:
+        launcher_bits = []
+        if env_vars:
+            launcher_bits.append("env " + ", ".join(f"{key}={value}" for key, value in env_vars.items()))
+        if flags:
+            launcher_bits.append("flags " + " ".join(flags))
+        plan.append("patch exported launcher: " + "; ".join(launcher_bits))
+    if known_app_key(diagnosis) == "cursor":
+        plan.append("refresh Distrobox URL bridge to host Firefox/xdg-open")
+    if plan:
+        print("repair-plan:")
+        for item in plan:
+            print(f"  - {item}")
+    else:
+        print("repair-plan: no automatic repair rule matched")
+
+
+def doctor_app(target: str) -> None:
+    print_diagnosis(diagnose_app(target))
+
+
+def repair_app(target: str, *, dry_run: bool) -> None:
+    diagnosis = diagnose_app(target)
+    print_diagnosis(diagnosis)
+
+    if not diagnosis.box:
+        raise SystemExit("repair-app currently supports exported Distrobox launchers only.")
+
+    actions: list[str] = []
+    packages = repair_packages_for_diagnosis(diagnosis)
+    if packages:
+        install_box_packages(diagnosis.box, diagnosis.family, packages, dry_run=dry_run)
+        actions.append("installed box packages: " + ", ".join(packages))
+
+    env_vars, flags = launcher_repair_profile(diagnosis)
+    if patch_desktop_exec(diagnosis.desktop.path, env_vars, flags, dry_run=dry_run):
+        actions.append("patched launcher Exec")
+
+    if known_app_key(diagnosis) == "cursor":
+        if ensure_host_url_opener(dry_run=dry_run):
+            actions.append("installed host URL opener")
+        repair_url_bridge_in_box(diagnosis.box, dry_run=dry_run)
+        actions.append("refreshed Distrobox URL bridge")
+
+    repair_kde(dry_run=dry_run)
+    actions.append("rebuilt KDE desktop cache")
+
+    if not dry_run:
+        for action in actions:
+            record_repair(target, diagnosis.desktop.desktop_id, diagnosis.box, action)
+
+    print("repair-actions:")
+    for action in actions:
+        print(f"  - {action}")
+
+
+def repair_kde(*, dry_run: bool) -> None:
+    script = bridge_script()
+    if script.exists():
+        run([script, "repair-kde"], dry_run=dry_run)
+        return
+
+    applications_dir = xdg_data_home() / "applications"
+    applications_dir.mkdir(parents=True, exist_ok=True)
+    if shutil.which("update-desktop-database"):
+        run(["update-desktop-database", applications_dir], dry_run=dry_run)
+    if shutil.which("kbuildsycoca6"):
+        run(["kbuildsycoca6", "--noincremental"], dry_run=dry_run)
+
+
+def active_install_rows(conn: sqlite3.Connection) -> list[tuple[object, ...]]:
+    return conn.execute(
+        """
+        SELECT id, target, backend, kind, source, COALESCE(app_id, ''), installed_at
+        FROM installs
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM uninstalls
+          WHERE uninstalls.install_id = installs.id
+            AND uninstalls.result = 'success'
+        )
+        ORDER BY id DESC
+        """
+    ).fetchall()
+
+
+def install_row_by_id(conn: sqlite3.Connection, record_id: int) -> tuple[object, ...] | None:
+    return conn.execute(
+        """
+        SELECT id, target, backend, kind, source, COALESCE(app_id, ''), installed_at
+        FROM installs
+        WHERE id = ?
+        """,
+        (record_id,),
+    ).fetchone()
+
+
+def successful_uninstall_for_install(conn: sqlite3.Connection, record_id: int) -> tuple[object, ...] | None:
+    return conn.execute(
+        """
+        SELECT id, result, uninstalled_at
+        FROM uninstalls
+        WHERE install_id = ?
+          AND result = 'success'
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (record_id,),
+    ).fetchone()
+
+
+def successful_uninstall_rows_for_target(conn: sqlite3.Connection, target_or_app_id: str) -> list[tuple[object, ...]]:
+    return conn.execute(
+        """
+        SELECT installs.id, installs.target, installs.backend, COALESCE(installs.app_id, ''),
+               uninstalls.id, uninstalls.uninstalled_at
+        FROM installs
+        JOIN uninstalls ON uninstalls.install_id = installs.id
+        WHERE uninstalls.result = 'success'
+          AND (installs.target = ? OR installs.app_id = ?)
+        ORDER BY uninstalls.uninstalled_at DESC, uninstalls.id DESC
+        """,
+        (target_or_app_id, target_or_app_id),
+    ).fetchall()
+
+
+def resolve_install_record(target_or_record_id: str) -> InstallRecord:
+    conn = ensure_db()
+
+    if target_or_record_id.isdigit():
+        record_id = int(target_or_record_id)
+        row = install_row_by_id(conn, record_id)
+        if not row:
+            raise SystemExit(f"active mpm-pkg install record not found: {target_or_record_id}")
+        uninstall = successful_uninstall_for_install(conn, record_id)
+        if uninstall:
+            uninstalled_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(uninstall[2])))
+            raise SystemExit(
+                f"install record {record_id} has already been successfully uninstalled "
+                f"(uninstall-id: {uninstall[0]}, at: {uninstalled_at})"
+            )
+        return row_to_install_record(row)
+
+    rows = active_install_rows(conn)
+    matches = [
+        row
+        for row in rows
+        if row[1] == target_or_record_id or (row[5] and row[5] == target_or_record_id)
+    ]
+    if not matches:
+        inactive_matches = successful_uninstall_rows_for_target(conn, target_or_record_id)
+        if inactive_matches:
+            ids = ", ".join(str(row[0]) for row in inactive_matches)
+            raise SystemExit(
+                f"matching install record has already been successfully uninstalled; "
+                f"use list-uninstalls for details or choose another active record id: {ids}"
+            )
+        raise SystemExit(f"active mpm-pkg install record not found for: {target_or_record_id}")
+    if len(matches) > 1:
+        ids = ", ".join(str(row[0]) for row in matches)
+        raise SystemExit(f"multiple active records match {target_or_record_id}; use one record id: {ids}")
+    return row_to_install_record(matches[0])
+
+
+def appimage_launcher_id(record: InstallRecord) -> str:
+    if record.app_id:
+        return record.app_id
+    return Path(record.target).stem.lower().replace(" ", "-")
+
+
+def flatpak_diagnostics(app_id: str) -> list[str]:
+    installed = command_succeeds(["flatpak", "--user", "info", app_id])
+    if installed is False:
+        return [f"stale-state: Flatpak record exists, but user Flatpak app is not installed: {app_id}"]
+    if installed is None:
+        return ["state-check: flatpak command not available; cannot verify user Flatpak deployment"]
+    return ["state-check: Flatpak user deployment is present"]
+
+
+def plan_flatpak_uninstall(record: InstallRecord) -> UninstallPlan:
+    app_id = record.app_id or record.target
+    commands = [["flatpak", "--user", "uninstall", "-y", app_id]]
+    notes = [
+        "backend: flatpak user scope",
+        "removes the Flatpak app deployment only",
+        "does not pass --delete-data",
+    ]
+    return UninstallPlan(record=record, commands=commands, notes=notes, diagnostics=flatpak_diagnostics(app_id))
+
+
+def plan_appimage_uninstall(record: InstallRecord) -> UninstallPlan:
+    app_dir = xdg_data_home() / "mpm" / "appimages"
+    applications_dir = xdg_data_home() / "applications"
+    app_binary = app_dir / Path(record.target).name
+    desktop_file = applications_dir / f"mpm-appimage-{appimage_launcher_id(record)}.desktop"
+    commands = [["rm", "-f", str(app_binary)], ["rm", "-f", str(desktop_file)]]
+    notes = [
+        "backend: local AppImage registry",
+        f"appimage: {app_binary}",
+        f"desktop-entry: {desktop_file}",
+        "removes MalikOS-managed binary copy and launcher only",
+    ]
+    diagnostics: list[str] = []
+    binary_exists = app_binary.exists()
+    desktop_exists = desktop_file.exists()
+    desktop_exec = executable_from_exec(read_desktop(desktop_file).exec_line) if desktop_exists else None
+    desktop_exec_missing = bool(desktop_exec and desktop_exec.startswith("/") and not Path(desktop_exec).exists())
+    if not binary_exists and not desktop_exists:
+        diagnostics.append(
+            "stale-state: AppImage record exists, but the MalikOS-managed binary and desktop entry are missing"
+        )
+    elif not binary_exists:
+        diagnostics.append("stale-state: AppImage desktop entry exists, but the MalikOS-managed binary is missing")
+    elif not desktop_exists:
+        diagnostics.append("stale-state: AppImage record exists, but the MalikOS-managed desktop entry is missing")
+    elif desktop_exec_missing:
+        diagnostics.append(f"stale-state: AppImage desktop entry exists, but Exec target is missing: {desktop_exec}")
+    else:
+        diagnostics.append("state-check: AppImage managed binary and desktop entry are present")
+    return UninstallPlan(record=record, commands=commands, notes=notes, diagnostics=diagnostics)
+
+
+def distrobox_remove_package_command(family: str | None, package_name: str) -> str:
+    quoted = shlex.quote(package_name)
+    if family in {"ubuntu", "debian"}:
+        return f"sudo DEBIAN_FRONTEND=noninteractive apt-get remove -y {quoted}"
+    if family == "fedora":
+        return f"sudo dnf remove -y {quoted}"
+    raise SystemExit(f"unknown Distrobox package family for uninstall: {family or 'unknown'}")
+
+
+def standard_box_for_backend(backend: str) -> str | None:
+    if backend == "distrobox-deb":
+        return STANDARD_BOXES["ubuntu"]
+    if backend == "distrobox-rpm":
+        return STANDARD_BOXES["fedora"]
+    return None
+
+
+def package_candidates_for_record(record: InstallRecord) -> list[str]:
+    candidates = [record.app_id or "", Path(record.target).stem, Path(record.target).name]
+    unique: list[str] = []
+    for candidate in candidates:
+        value = candidate.strip()
+        if value.endswith(".desktop"):
+            value = value[: -len(".desktop")]
+        if value and value not in unique:
+            unique.append(value)
+    return unique
+
+
+def package_installed_in_box(box: str, family: str | None, candidates: list[str]) -> str | None:
+    if not candidates or not shutil.which("distrobox"):
+        return None
+    quoted_candidates = " ".join(shlex.quote(candidate) for candidate in candidates)
+    if family in {"ubuntu", "debian"}:
+        script = f"for pkg in {quoted_candidates}; do dpkg -s \"$pkg\" >/dev/null 2>&1 && printf '%s\\n' \"$pkg\" && exit 0; done"
+    elif family == "fedora":
+        script = f"for pkg in {quoted_candidates}; do rpm -q \"$pkg\" >/dev/null 2>&1 && printf '%s\\n' \"$pkg\" && exit 0; done"
+    else:
+        return None
+    code, stdout, _ = box_capture(box, script)
+    if code == 0 and stdout:
+        return stdout.splitlines()[0]
+    return None
+
+
+def plan_distrobox_uninstall(record: InstallRecord) -> UninstallPlan:
+    if not record.app_id:
+        raise SystemExit(
+            "cannot safely uninstall Distrobox record without app_id; "
+            "run mpm-pkg doctor first and uninstall by a precise record id after the app is mapped"
+    )
+
+    try:
+        diagnosis = diagnose_app(record.app_id)
+    except SystemExit as exc:
+        box = standard_box_for_backend(record.backend)
+        family = box_family(box) if box else None
+        package_name = package_installed_in_box(box, family, package_candidates_for_record(record)) if box else None
+        message = (
+            "stale-state: Distrobox package appears installed but exported launcher is missing"
+            if package_name
+            else "stale-state: Distrobox exported launcher is missing or cannot be mapped safely"
+        )
+        detail = f"; package: {package_name}" if package_name else ""
+        raise SystemExit(f"{message}{detail}; refusing uninstall without a precise launcher/package mapping ({exc})")
+
+    if not diagnosis.box or not diagnosis.app_id:
+        raise SystemExit(f"cannot map exported Distrobox app safely: {record.app_id}")
+    if not diagnosis.package_name:
+        raise SystemExit(
+            "stale-state: Distrobox exported launcher exists, but owning package cannot be mapped; "
+            f"refusing uninstall: {record.app_id}"
+        )
+
+    commands = [
+        [
+            "distrobox",
+            "enter",
+            "--name",
+            diagnosis.box,
+            "--",
+            "distrobox-export",
+            "--app",
+            diagnosis.app_id,
+            "--delete",
+        ],
+        [
+            "distrobox",
+            "enter",
+            "--name",
+            diagnosis.box,
+            "--",
+            "bash",
+            "-lc",
+            distrobox_remove_package_command(diagnosis.family, diagnosis.package_name),
+        ],
+    ]
+    notes = [
+        "backend: Distrobox exported app",
+        f"box: {diagnosis.box}",
+        f"app-id: {diagnosis.app_id}",
+        f"package: {diagnosis.package_name}",
+        "uses package remove, not purge; user config/data is preserved",
+    ]
+    diagnostics = ["state-check: Distrobox exported launcher, source package, and owning box are mapped"]
+    return UninstallPlan(record=record, commands=commands, notes=notes, diagnostics=diagnostics)
+
+
+def plan_host_uninstall(record: InstallRecord) -> UninstallPlan:
+    package = record.target
+    snapshot_description = f"pre-mpm-pkg-uninstall-{record.backend}: {package}"
+    commands = [
+        [
+            "sudo",
+            "snapper",
+            "-c",
+            "root",
+            "create",
+            "--cleanup-algorithm",
+            "number",
+            "--description",
+            snapshot_description,
+        ],
+        ["sudo", "pacman", "-R", package],
+    ]
+    notes = [
+        f"backend: {record.backend} host package",
+        "requires Snapper root config before mutation",
+        "real host uninstall requires explicit --yes from the caller",
+        "uses pacman -R only; no cascade, recursive orphan removal, or user data deletion",
+        f"recovery: expected snapshot description: {snapshot_description}",
+        "recovery: inspect manually with sudo snapper -c root list and sudo snapper -c root status PRE..POST",
+        "recovery: rollback is manual only; mpm-pkg does not perform automatic rollback",
+    ]
+    installed = command_succeeds(["pacman", "-Q", package])
+    if installed is False:
+        diagnostics = [f"stale-state: host package record exists, but pacman no longer reports it installed: {package}"]
+    elif installed is None:
+        diagnostics = ["state-check: pacman command not available; cannot verify host package state"]
+    else:
+        diagnostics = ["state-check: pacman reports host package installed"]
+    return UninstallPlan(record=record, commands=commands, notes=notes, diagnostics=diagnostics)
+
+
+def plan_uninstall(target_or_record_id: str) -> UninstallPlan:
+    record = resolve_install_record(target_or_record_id)
+    if record.backend == "flatpak":
+        return plan_flatpak_uninstall(record)
+    if record.backend == "appimage":
+        return plan_appimage_uninstall(record)
+    if record.backend in {"distrobox-deb", "distrobox-rpm"}:
+        return plan_distrobox_uninstall(record)
+    if record.backend in {"pacman", "aur"}:
+        return plan_host_uninstall(record)
+    raise SystemExit(f"backend is not uninstallable yet: {record.backend}")
+
+
+def format_uninstall_plan(plan: UninstallPlan) -> str:
+    record = plan.record
+    lines = [
+        "uninstall-plan:",
+        f"record-id: {record.id}",
+        f"target: {record.target}",
+        f"backend: {record.backend}",
+        f"kind: {record.kind}",
+        f"source: {record.source}",
+        f"app-id: {record.app_id or ''}",
+        f"data-policy: {plan.data_policy}",
+        "notes:",
+    ]
+    lines.extend(f"  - {note}" for note in plan.notes)
+    lines.append("diagnostics:")
+    lines.extend(f"  - {diagnostic}" for diagnostic in plan.diagnostics)
+    lines.append("commands:")
+    lines.extend("  - " + shlex.join([str(arg) for arg in command]) for command in plan.commands)
+    return "\n".join(lines)
+
+
+def print_uninstall_plan(plan: UninstallPlan) -> None:
+    print(format_uninstall_plan(plan))
+
+
+def run_uninstall_plan(plan: UninstallPlan, *, dry_run: bool) -> None:
+    record = plan.record
+    if record.backend in {"pacman", "aur"}:
+        create_pre_host_snapshot(record.target, f"uninstall-{record.backend}", dry_run=dry_run)
+        run(["sudo", "pacman", "-R", record.target], dry_run=dry_run)
+        return
+
+    if record.backend == "flatpak" and not dry_run and not shutil.which("flatpak"):
+        raise SystemExit("Flatpak backend requested, but flatpak is not installed.")
+
+    for command in plan.commands:
+        run(command, dry_run=dry_run)
+
+    if record.backend in {"appimage", "distrobox-deb", "distrobox-rpm"}:
+        repair_kde(dry_run=dry_run)
+
+
+def uninstall_target(args: argparse.Namespace) -> None:
+    plan = plan_uninstall(args.target)
+    print_uninstall_plan(plan)
+
+    if plan.record.backend in {"pacman", "aur"} and not args.dry_run and not args.yes:
+        raise SystemExit("host package uninstall requires --yes after reviewing --dry-run output")
+
+    run_uninstall_plan(plan, dry_run=args.dry_run)
+    if not args.dry_run:
+        record_uninstall(plan, "success")
+
+
+def install_target(args: argparse.Namespace) -> None:
+    target = args.target
+    detected = choose_backend(target, args.backend)
+    backend = detected["backend"]
+    source = detected["source"]
+    kind = detected["kind"]
+
+    if backend == "unknown":
+        raise SystemExit("Cannot install URL without .deb, .rpm, or .AppImage suffix yet.")
+
+    actual_target = Path(download_url(target, dry_run=args.dry_run)) if source == "url" else Path(target)
+
+    if backend in {"distrobox-deb", "distrobox-rpm", "appimage"} and not actual_target.exists():
+        raise SystemExit(f"file not found: {actual_target}")
+
+    print(explain(str(target), args.backend))
+
+    if backend == "pacman":
+        install_pacman(target, dry_run=args.dry_run)
+    elif backend == "aur":
+        install_aur(target, dry_run=args.dry_run)
+    elif backend == "flatpak":
+        install_flatpak(target, dry_run=args.dry_run)
+    elif backend in {"distrobox-deb", "distrobox-rpm"}:
+        install_distrobox_file(backend, actual_target, args.app_id, dry_run=args.dry_run)
+    elif backend == "appimage":
+        install_appimage(actual_target, app_id=args.app_id, dry_run=args.dry_run)
+    else:
+        raise SystemExit(f"backend is not installable yet: {backend}")
+
+    if not args.dry_run:
+        record_install(str(target), backend, kind, source, args.app_id)
+
+
+def list_installed() -> None:
+    conn = ensure_db()
+    rows = active_install_rows(conn)
+
+    if not rows:
+        print("No mpm-pkg installs recorded yet.")
+        return
+
+    for row in rows:
+        installed_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(row[6]))
+        print(f"{row[0]}\t{row[1]}\t{row[2]}\t{row[3]}\t{row[4]}\t{row[5]}\t{installed_at}")
+
+
+def list_uninstalls() -> None:
+    conn = ensure_db()
+    rows = conn.execute(
+        """
+        SELECT id, COALESCE(install_id, ''), target, backend, COALESCE(app_id, ''), result, uninstalled_at
+        FROM uninstalls
+        ORDER BY id DESC
+        """
+    ).fetchall()
+
+    if not rows:
+        print("No mpm-pkg uninstalls recorded yet.")
+        return
+
+    for row in rows:
+        uninstalled_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(row[6]))
+        print(f"{row[0]}\t{row[1]}\t{row[2]}\t{row[3]}\t{row[4]}\t{row[5]}\t{uninstalled_at}")
+
+
+def history_timestamp(value: int) -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(value))
+
+
+def print_history() -> None:
+    conn = ensure_db()
+    entries: list[dict[str, object]] = []
+
+    for row in conn.execute(
+        """
+        SELECT id, target, backend, kind, source, COALESCE(app_id, ''), installed_at
+        FROM installs
+        ORDER BY installed_at DESC, id DESC
+        """
+    ).fetchall():
+        entries.append(
+            {
+                "operation": "install",
+                "record_id": row[0],
+                "install_id": row[0],
+                "target": row[1],
+                "backend": row[2],
+                "result": "recorded",
+                "timestamp": history_timestamp(int(row[6])),
+                "kind": row[3],
+                "source": row[4],
+                "app_id": row[5],
+                "log_path": "",
+            }
+        )
+
+    for row in conn.execute(
+        """
+        SELECT id, COALESCE(install_id, ''), target, backend, kind, source,
+               COALESCE(app_id, ''), plan, result, uninstalled_at
+        FROM uninstalls
+        ORDER BY uninstalled_at DESC, id DESC
+        """
+    ).fetchall():
+        entries.append(
+            {
+                "operation": "uninstall",
+                "record_id": row[0],
+                "install_id": row[1],
+                "target": row[2],
+                "backend": row[3],
+                "result": row[8],
+                "timestamp": history_timestamp(int(row[9])),
+                "kind": row[4],
+                "source": row[5],
+                "app_id": row[6],
+                "detail": row[7],
+                "log_path": "",
+            }
+        )
+
+    for row in conn.execute(
+        """
+        SELECT id, target, COALESCE(desktop_id, ''), COALESCE(box, ''),
+               action, repaired_at
+        FROM repairs
+        ORDER BY repaired_at DESC, id DESC
+        """
+    ).fetchall():
+        entries.append(
+            {
+                "operation": "repair",
+                "record_id": row[0],
+                "install_id": "",
+                "target": row[1],
+                "backend": row[3] or "repair",
+                "result": "recorded",
+                "timestamp": history_timestamp(int(row[5])),
+                "desktop_id": row[2],
+                "box": row[3],
+                "detail": row[4],
+                "log_path": "",
+            }
+        )
+
+    entries.sort(key=lambda entry: (str(entry.get("timestamp", "")), int(entry.get("record_id") or 0)), reverse=True)
+
+    if not entries:
+        print("No mpm-pkg history recorded yet.")
+        return
+
+    for entry in entries:
+        print(json.dumps(entry, ensure_ascii=False, sort_keys=True))
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog=APP_NAME)
+    parser.add_argument("--version", action="version", version="mpm-pkg 0.14-mvp")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    detect_parser = subparsers.add_parser("detect", help="detect target type and default backend")
+    detect_parser.add_argument("target")
+
+    explain_parser = subparsers.add_parser("explain", help="explain backend policy for a target")
+    explain_parser.add_argument("target")
+    explain_parser.add_argument("--backend", choices=sorted(BACKENDS))
+
+    install_parser = subparsers.add_parser("install", help="install a package/file through the selected backend")
+    install_parser.add_argument("target")
+    install_parser.add_argument("--backend", choices=sorted(BACKENDS))
+    install_parser.add_argument("--app-id", help="desktop app id to export/register when needed")
+    install_parser.add_argument("--dry-run", action="store_true")
+
+    subparsers.add_parser("list-installed", help="list installs recorded by mpm-pkg")
+    subparsers.add_parser("list-uninstalls", help="list uninstall history recorded by mpm-pkg")
+    subparsers.add_parser("history", help="print read-only install/uninstall/repair history as JSON lines")
+
+    uninstall_parser = subparsers.add_parser("uninstall", help="uninstall a mpm-pkg active install record")
+    uninstall_parser.add_argument("target", metavar="TARGET_OR_RECORD_ID")
+    uninstall_parser.add_argument("--dry-run", action="store_true")
+    uninstall_parser.add_argument("--yes", action="store_true", help="confirm host package uninstall after dry-run review")
+
+    doctor_parser = subparsers.add_parser("doctor", help="diagnose an installed app or desktop launcher")
+    doctor_parser.add_argument("target", metavar="APP_OR_DESKTOP_ID")
+
+    repair_app_parser = subparsers.add_parser("repair-app", help="repair an installed app launcher/integration")
+    repair_app_parser.add_argument("target", metavar="APP_OR_DESKTOP_ID")
+    repair_app_parser.add_argument("--dry-run", action="store_true")
+
+    repair_parser = subparsers.add_parser("repair-kde", help="refresh KDE desktop/menu integration")
+    repair_parser.add_argument("--dry-run", action="store_true")
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+
+    try:
+        if args.command == "detect":
+            detected = detect_target(args.target)
+            for key in ("source", "kind", "backend"):
+                print(f"{key}: {detected[key]}")
+        elif args.command == "explain":
+            print(explain(args.target, args.backend))
+        elif args.command == "install":
+            install_target(args)
+        elif args.command == "list-installed":
+            list_installed()
+        elif args.command == "list-uninstalls":
+            list_uninstalls()
+        elif args.command == "history":
+            print_history()
+        elif args.command == "uninstall":
+            uninstall_target(args)
+        elif args.command == "doctor":
+            doctor_app(args.target)
+        elif args.command == "repair-app":
+            repair_app(args.target, dry_run=args.dry_run)
+        elif args.command == "repair-kde":
+            repair_kde(dry_run=args.dry_run)
+        else:
+            parser.error(f"unknown command: {args.command}")
+    except subprocess.CalledProcessError as exc:
+        return exc.returncode
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

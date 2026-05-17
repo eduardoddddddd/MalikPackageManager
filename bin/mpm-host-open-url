@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+target="${1:-}"
+
+if [[ -z "$target" ]]; then
+  printf 'Usage: mpm-host-open-url URL_OR_FILE\n' >&2
+  exit 2
+fi
+
+if command -v distrobox-host-exec >/dev/null 2>&1; then
+  if distrobox-host-exec flatpak run org.mozilla.firefox "$target" >/dev/null 2>&1; then
+    exit 0
+  fi
+  exec distrobox-host-exec xdg-open "$target"
+fi
+
+if command -v flatpak >/dev/null 2>&1 && flatpak run org.mozilla.firefox "$target" >/dev/null 2>&1; then
+  exit 0
+fi
+
+exec xdg-open "$target"

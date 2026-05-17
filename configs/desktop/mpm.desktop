@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=MPM
+GenericName=Package Manager
+Comment=Install and repair apps through mpm-pkg
+Exec=mpm
+Icon=system-software-install
+Terminal=false
+Categories=Settings;PackageManager;Qt;KDE;
+StartupNotify=true
+X-MPM-Component=mpm

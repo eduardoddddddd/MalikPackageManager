@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "name": "Firefox",
+      "target": "org.mozilla.firefox",
+      "backend": "flatpak",
+      "source": "Flathub",
+      "summary": "Web browser installed as a user Flatpak.",
+      "tags": ["browser", "web", "flatpak", "tested"]
+    },
+    {
+      "name": "VLC",
+      "target": "org.videolan.VLC",
+      "backend": "flatpak",
+      "source": "Flathub",
+      "summary": "Media player kept outside the Arch host package set.",
+      "tags": ["video", "audio", "flatpak"]
+    },
+    {
+      "name": "OBS Studio",
+      "target": "com.obsproject.Studio",
+      "backend": "flatpak",
+      "source": "Flathub",
+      "summary": "Recording and streaming studio as a user Flatpak.",
+      "tags": ["recording", "streaming", "flatpak"]
+    },
+    {
+      "name": "Krita",
+      "target": "org.kde.krita",
+      "backend": "flatpak",
+      "source": "Flathub",
+      "summary": "Digital painting app delivered through Flatpak.",
+      "tags": ["graphics", "kde", "flatpak"]
+    },
+    {
+      "name": "GIMP",
+      "target": "org.gimp.GIMP",
+      "backend": "flatpak",
+      "source": "Flathub",
+      "summary": "Image editor delivered through Flatpak.",
+      "tags": ["graphics", "photo", "flatpak"]
+    },
+    {
+      "name": "Inkscape",
+      "target": "org.inkscape.Inkscape",
+      "backend": "flatpak",
+      "source": "Flathub",
+      "summary": "Vector graphics editor delivered through Flatpak.",
+      "tags": ["graphics", "vector", "flatpak"]
+    },
+    {
+      "name": "LibreOffice",
+      "target": "org.libreoffice.LibreOffice",
+      "backend": "flatpak",
+      "source": "Flathub",
+      "summary": "Office suite installed outside the Arch host package set.",
+      "tags": ["office", "documents", "flatpak"]
+    },
+    {
+      "name": "Blender",
+      "target": "org.blender.Blender",
+      "backend": "flatpak",
+      "source": "Flathub",
+      "summary": "3D creation suite delivered through Flatpak.",
+      "tags": ["3d", "graphics", "flatpak"]
+    },
+    {
+      "name": "btop",
+      "target": "btop",
+      "backend": "pacman",
+      "source": "Arch repo",
+      "summary": "Terminal system monitor; small host utility candidate.",
+      "tags": ["system", "terminal", "pacman"]
+    }
+  ]
+}

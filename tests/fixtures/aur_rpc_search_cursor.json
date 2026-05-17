@@ -1,0 +1,39 @@
+{
+  "version": 5,
+  "type": "search",
+  "resultcount": 2,
+  "results": [
+    {
+      "ID": 123456,
+      "Name": "cursor-bin",
+      "PackageBaseID": 123456,
+      "PackageBase": "cursor-bin",
+      "Version": "1.0.0-1",
+      "Description": "AI code editor",
+      "URL": "https://cursor.com/",
+      "NumVotes": 42,
+      "Popularity": 3.14,
+      "OutOfDate": null,
+      "Maintainer": "example",
+      "FirstSubmitted": 1700000000,
+      "LastModified": 1710000000,
+      "URLPath": "/cgit/aur.git/snapshot/cursor-bin.tar.gz"
+    },
+    {
+      "ID": 123457,
+      "Name": "cursor-bin-debug",
+      "PackageBaseID": 123457,
+      "PackageBase": "cursor-bin-debug",
+      "Version": "1.0.0-1",
+      "Description": "Debug symbols for cursor-bin",
+      "URL": "https://cursor.com/",
+      "NumVotes": 2,
+      "Popularity": 0.1,
+      "OutOfDate": 1715000000,
+      "Maintainer": "example",
+      "FirstSubmitted": 1700000000,
+      "LastModified": 1710000000,
+      "URLPath": "/cgit/aur.git/snapshot/cursor-bin-debug.tar.gz"
+    }
+  ]
+}

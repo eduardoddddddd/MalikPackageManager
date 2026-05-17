@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "broken",
+      "name": "Broken",
+      "summary": "Invalid route entry.",
+      "routes": [
+        {
+          "id": "script",
+          "kind": "script",
+          "url": "https://vendor.example/install.sh"
+        }
+      ]
+    }
+  ]
+}

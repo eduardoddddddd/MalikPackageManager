@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=MPM Package Installer
+Comment=Install external packages through MPM policy
+Exec=konsole --hold -e mpm-open %f
+Icon=system-software-install
+Terminal=false
+NoDisplay=false
+Categories=System;PackageManager;
+MimeType=application/vnd.debian.binary-package;application/x-deb;application/x-rpm;application/x-redhat-package-manager;
+X-MPM-Component=mpm-open
