@@ -49,58 +49,64 @@ def create_install_record(
     db = xdg_data_home / "mpm" / "mpm-pkg" / "installed.sqlite"
     db.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db)
-    conn.execute(
-        """
-        CREATE TABLE installs (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          target TEXT NOT NULL,
-          backend TEXT NOT NULL,
-          kind TEXT NOT NULL,
-          source TEXT NOT NULL,
-          app_id TEXT,
-          installed_at INTEGER NOT NULL
-        )
-        """
-    )
-    with conn:
-        cursor = conn.execute(
+    try:
+        conn.execute(
             """
-            INSERT INTO installs (target, backend, kind, source, app_id, installed_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            CREATE TABLE installs (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              target TEXT NOT NULL,
+              backend TEXT NOT NULL,
+              kind TEXT NOT NULL,
+              source TEXT NOT NULL,
+              app_id TEXT,
+              installed_at INTEGER NOT NULL
+            )
             """,
-            (target, backend, kind, source, app_id, int(time.time())),
         )
-    return int(cursor.lastrowid)
+        with conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO installs (target, backend, kind, source, app_id, installed_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (target, backend, kind, source, app_id, int(time.time())),
+            )
+        return int(cursor.lastrowid)
+    finally:
+        conn.close()
 
 
 def create_success_uninstall_record(xdg_data_home: Path, install_id: int, *, target: str, backend: str) -> None:
     db = xdg_data_home / "mpm" / "mpm-pkg" / "installed.sqlite"
     conn = sqlite3.connect(db)
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS uninstalls (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          install_id INTEGER,
-          target TEXT NOT NULL,
-          backend TEXT NOT NULL,
-          kind TEXT NOT NULL,
-          source TEXT NOT NULL,
-          app_id TEXT,
-          plan TEXT NOT NULL,
-          result TEXT NOT NULL,
-          uninstalled_at INTEGER NOT NULL
-        )
-        """
-    )
-    with conn:
+    try:
         conn.execute(
             """
-            INSERT INTO uninstalls
-              (install_id, target, backend, kind, source, app_id, plan, result, uninstalled_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            CREATE TABLE IF NOT EXISTS uninstalls (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              install_id INTEGER,
+              target TEXT NOT NULL,
+              backend TEXT NOT NULL,
+              kind TEXT NOT NULL,
+              source TEXT NOT NULL,
+              app_id TEXT,
+              plan TEXT NOT NULL,
+              result TEXT NOT NULL,
+              uninstalled_at INTEGER NOT NULL
+            )
             """,
-            (install_id, target, backend, "name", "name", None, "test plan", "success", int(time.time())),
         )
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO uninstalls
+                  (install_id, target, backend, kind, source, app_id, plan, result, uninstalled_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (install_id, target, backend, "name", "name", None, "test plan", "success", int(time.time())),
+            )
+    finally:
+        conn.close()
 
 
 def write_executable(path: Path, text: str) -> None:
@@ -145,6 +151,25 @@ class MalikpkgCliTests(unittest.TestCase):
         self.assertIn("kind: deb", output)
         self.assertIn("backend: distrobox-deb", output)
         self.assertIn("inside the Ubuntu Distrobox", output)
+
+    def test_distrobox_deb_url_dry_run_does_not_require_downloaded_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bridge = Path(tmpdir) / "bridge.sh"
+            write_executable(bridge, "#!/bin/sh\nexit 0\n")
+
+            output = run_mpm_pkg_env(
+                {"XDG_DATA_HOME": tmpdir, "MPM_DISTROBOX_BRIDGE": str(bridge)},
+                "install",
+                "https://vendor.example/cool.deb",
+                "--backend",
+                "distrobox-deb",
+                "--dry-run",
+            )
+
+        self.assertIn("curl -L --fail -o", output)
+        self.assertIn("cool.deb", output)
+        self.assertIn("backend: distrobox-deb", output)
+        self.assertIn(f"{bridge} install-deb", output)
 
     def test_pacman_dry_run_creates_snapshot_before_host_install(self) -> None:
         output = run_mpm_pkg("install", "--dry-run", "btop", "--backend", "pacman")
@@ -455,63 +480,66 @@ esac
             db.parent.mkdir(parents=True, exist_ok=True)
             conn = sqlite3.connect(db)
             now = int(time.time())
-            conn.executescript(
-                """
-                CREATE TABLE installs (
-                  id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  target TEXT NOT NULL,
-                  backend TEXT NOT NULL,
-                  kind TEXT NOT NULL,
-                  source TEXT NOT NULL,
-                  app_id TEXT,
-                  installed_at INTEGER NOT NULL
-                );
-                CREATE TABLE uninstalls (
-                  id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  install_id INTEGER,
-                  target TEXT NOT NULL,
-                  backend TEXT NOT NULL,
-                  kind TEXT NOT NULL,
-                  source TEXT NOT NULL,
-                  app_id TEXT,
-                  plan TEXT NOT NULL,
-                  result TEXT NOT NULL,
-                  uninstalled_at INTEGER NOT NULL
-                );
-                CREATE TABLE repairs (
-                  id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  target TEXT NOT NULL,
-                  desktop_id TEXT,
-                  box TEXT,
-                  action TEXT NOT NULL,
-                  repaired_at INTEGER NOT NULL
-                );
-                """
-            )
-            with conn:
-                conn.execute(
-                    "INSERT INTO installs VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (1, "org.mozilla.firefox", "flatpak", "name", "name", "org.mozilla.firefox", now),
+            try:
+                conn.executescript(
+                    """
+                    CREATE TABLE installs (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      target TEXT NOT NULL,
+                      backend TEXT NOT NULL,
+                      kind TEXT NOT NULL,
+                      source TEXT NOT NULL,
+                      app_id TEXT,
+                      installed_at INTEGER NOT NULL
+                    );
+                    CREATE TABLE uninstalls (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      install_id INTEGER,
+                      target TEXT NOT NULL,
+                      backend TEXT NOT NULL,
+                      kind TEXT NOT NULL,
+                      source TEXT NOT NULL,
+                      app_id TEXT,
+                      plan TEXT NOT NULL,
+                      result TEXT NOT NULL,
+                      uninstalled_at INTEGER NOT NULL
+                    );
+                    CREATE TABLE repairs (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      target TEXT NOT NULL,
+                      desktop_id TEXT,
+                      box TEXT,
+                      action TEXT NOT NULL,
+                      repaired_at INTEGER NOT NULL
+                    );
+                    """
                 )
-                conn.execute(
-                    "INSERT INTO uninstalls VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        1,
-                        1,
-                        "org.mozilla.firefox",
-                        "flatpak",
-                        "name",
-                        "name",
-                        "org.mozilla.firefox",
-                        "uninstall-plan:\ncommands:\n  - flatpak --user uninstall -y org.mozilla.firefox",
-                        "success",
-                        now + 1,
-                    ),
-                )
-                conn.execute(
-                    "INSERT INTO repairs VALUES (?, ?, ?, ?, ?, ?)",
-                    (1, "OpenCode", "opencode.desktop", "mpm-ubuntu-apps", "patch exported launcher", now + 2),
-                )
+                with conn:
+                    conn.execute(
+                        "INSERT INTO installs VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (1, "org.mozilla.firefox", "flatpak", "name", "name", "org.mozilla.firefox", now),
+                    )
+                    conn.execute(
+                        "INSERT INTO uninstalls VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            1,
+                            1,
+                            "org.mozilla.firefox",
+                            "flatpak",
+                            "name",
+                            "name",
+                            "org.mozilla.firefox",
+                            "uninstall-plan:\ncommands:\n  - flatpak --user uninstall -y org.mozilla.firefox",
+                            "success",
+                            now + 1,
+                        ),
+                    )
+                    conn.execute(
+                        "INSERT INTO repairs VALUES (?, ?, ?, ?, ?, ?)",
+                        (1, "OpenCode", "opencode.desktop", "mpm-ubuntu-apps", "patch exported launcher", now + 2),
+                    )
+            finally:
+                conn.close()
 
             output = run_mpm_pkg_env({"XDG_DATA_HOME": tmpdir}, "history")
 

@@ -1,10 +1,10 @@
 # MPM — Malik Package Manager
 
-Versión **0.14-mvp** · Arch Linux · Python 3 + PySide6
+Versión **0.14-mvp + hardening** · Host primario Arch Linux · Python 3 + PySide6
 
 Gestor de aplicaciones unificado para Arch Linux. Instala y gestiona apps a través de múltiples backends — Flatpak, pacman, AUR, AppImage y paquetes DEB/RPM en contenedores Distrobox — bajo una política consistente y con registro completo de historial.
 
-**Objetivo de desarrollo:** paquete AUR instalable con una sola línea que detecta el host, descarga e instala todas sus dependencias de forma transparente. Ver [docs/roadmap.md](docs/roadmap.md).
+**Objetivo de desarrollo:** MPM estable, instalable y honesto operacionalmente. El paquete AUR sigue siendo un objetivo, pero antes se priorizan preflight, seguridad AUR, Snapper opcional, terminal/sudo fiable, manifiestos post-install y Distrobox robusto. Ver [docs/roadmap.md](docs/roadmap.md).
 
 ---
 
@@ -21,6 +21,23 @@ La GUI delega todas las operaciones de paquetes a `mpm-pkg`. Ambos son utilizabl
 
 ---
 
+## Principio de seguridad
+
+MPM no reemplaza el estado real de los gestores existentes. Actúa como orquestador y registro, pero el estado vive en `pacman`, AUR helper, Flatpak, AppImages, launchers XDG, contenedores Distrobox y SQLite local.
+
+Cada backend debe ser honesto sobre:
+
+- qué gestor toca
+- si modifica el host
+- si requiere `sudo`
+- si hay snapshot
+- qué datos elimina y cuáles conserva
+- qué estado ha verificado y qué estado solo ha registrado
+
+Distrobox mantiene DEB/RPM fuera del gestor Arch, pero **no es un sandbox de seguridad fuerte**: las apps pueden compartir HOME, sesión gráfica y D-Bus según la configuración de Distrobox.
+
+---
+
 ## Backends
 
 | Backend | Qué instala | Requiere |
@@ -31,23 +48,28 @@ La GUI delega todas las operaciones de paquetes a `mpm-pkg`. Ambos son utilizabl
 | `appimage` | Bundles AppImage de vendor | — |
 | `distrobox-deb` | Archivos `.deb` en contenedor Ubuntu | `distrobox` + caja `mpm-ubuntu-apps` |
 | `distrobox-rpm` | Archivos `.rpm` en contenedor Fedora | `distrobox` + caja `mpm-fedora-apps` |
-| `distrobox-apt` | Nombres de paquetes APT en contenedor Ubuntu | `distrobox` + caja `mpm-ubuntu-apps` |
-| `distrobox-dnf` | Nombres de paquetes DNF en contenedor Fedora | `distrobox` + caja `mpm-fedora-apps` |
+| `distrobox-apt` | Búsqueda APT en contenedor Ubuntu | `discovery-only` en 0.14 |
+| `distrobox-dnf` | Búsqueda DNF en contenedor Fedora | `discovery-only` en 0.14 |
 
 > \* El backend `pacman` crea un snapshot BTRFS automático antes de cada operación. Requiere Snapper con config root (`/etc/snapper/configs/root`). En la versión 0.15 esto será opcional.
+
+> AUR sigue siendo comunitario. El roadmap reestructura 0.15 para requerir revisión de PKGBUILD por defecto y evitar instalaciones AUR silenciosas.
 
 ---
 
 ## Estado actual de portabilidad
 
-| Componente | Estado en Arch genérico |
+| Componente | Estado actual |
 |---|---|
 | `flatpak` backend | ✅ Operativo con `flatpak` instalado |
 | `aur` backend | ✅ Operativo con `yay` o `paru` |
-| GUI búsqueda y exploración | ✅ Operativo con `python-pyside6` |
+| GUI búsqueda y exploración | ✅ Validado con PySide6 en venv y Qt offscreen |
+| Catálogo/vendor index | ✅ JSON validado; vendor index incluye rutas Cursor |
 | `pacman` backend | ⚠️ Bloqueado sin Snapper configurado (se resuelve en 0.15) |
-| `distrobox-*` backends | ⚠️ Requiere contenedores creados; se automatizan en 0.17 |
-| Integración `.desktop` | ⚠️ Asume `konsole`; se hace agnóstico en 0.15 |
+| `distrobox-deb/rpm` | ⚠️ Requiere contenedores creados; se endurece en 0.18 |
+| `distrobox-apt/dnf` | ⚠️ Búsqueda solamente; instalación no implementada |
+| Integración `.desktop` | ⚠️ Aún necesita terminal/escritorio agnóstico |
+| Host no-Arch | ⚠️ Flatpak/AppImage/Distrobox pueden ser portables; pacman/AUR son Arch-only |
 
 ---
 
@@ -85,6 +107,7 @@ MalikPackageManager/
 │   ├── test_catalog_providers.py
 │   ├── test_mpm_pkg_cli.py
 │   ├── test_search.py
+│   ├── test_syntax.py
 │   └── test_workflow.py
 ├── docs/
 │   └── roadmap.md               # Hoja de ruta hasta 1.0
@@ -105,7 +128,7 @@ MalikPackageManager/
 - `snapper` con config root — backend pacman (snapshots BTRFS automáticos)
 - `distrobox` — backends DEB/RPM/APT/DNF
 
-**Contenedores Distrobox** (opcionales, bootstrap automático en 0.17):
+**Contenedores Distrobox** (opcionales, bootstrap robusto en 0.18):
 - `mpm-ubuntu-apps` — Ubuntu LTS para .deb y APT
 - `mpm-debian-apps` — Debian estable
 - `mpm-fedora-apps` — Fedora para .rpm y DNF
@@ -130,6 +153,7 @@ Instala en `~/.local/`:
 ~/.local/bin/mpm-open
 ~/.local/bin/mpm-host-open-url
 ~/.local/lib/mpm/src/mpm/
+~/.local/lib/mpm/mpm-distrobox-bridge.sh
 ~/.local/share/applications/mpm.desktop
 ~/.local/share/applications/mpm-package-installer.desktop
 ~/.config/mpm/catalog.json         (solo si no existe)
@@ -146,7 +170,7 @@ make uninstall
 
 Config (`~/.config/mpm/`) y datos (`~/.local/share/mpm/`) se conservan.
 
-### Desde AUR (objetivo 0.18)
+### Desde AUR (objetivo 0.19)
 
 ```bash
 yay -S mpm
@@ -183,6 +207,7 @@ mpm-pkg install /ruta/vendor.deb --backend distrobox-deb
 
 # Dry run (muestra comandos, no ejecuta)
 mpm-pkg install btop --backend pacman --dry-run
+mpm-pkg install https://vendor.example/app.deb --backend distrobox-deb --dry-run
 
 # Listar apps instaladas
 mpm-pkg list-installed
@@ -236,7 +261,19 @@ Apps curadas por defecto: Firefox, VLC, OBS Studio, Krita, GIMP, Inkscape, Libre
 
 ### Vendor / AppImage index
 
-`configs/mpm/vendor_index.json` define rutas para apps que distribuyen su propio instalador (Cursor, OpenCode, etc.). Cada ruta mapea la app a una URL de AppImage, un DEB en el contenedor Ubuntu, o un RPM en el contenedor Fedora.
+`configs/mpm/vendor_index.json` define rutas para apps que distribuyen su propio instalador. El índice empaquetado incluye Cursor con rutas AppImage, DEB y RPM.
+
+Cada ruta puede incluir:
+
+- URL del artefacto
+- backend recomendado
+- caja Distrobox
+- `app_id`
+- `sha256`
+- política de actualización
+- política de desinstalación
+
+Si una ruta vendor no tiene `sha256`, MPM debe avisar antes de instalar. La verificación estricta queda priorizada en 0.15.
 
 ---
 
@@ -303,14 +340,25 @@ La configuración respeta `XDG_CONFIG_HOME` (por defecto `~/.config`):
 ## Desarrollo
 
 ```bash
-# Ejecutar suite de tests
-make test
+# Crear entorno de pruebas local
+python -m venv .venv
+.venv/bin/python -m pip install --upgrade pip setuptools wheel
+.venv/bin/python -m pip install PySide6
 
-# Smoke-test de los binarios (sin entorno completo)
-make validate
+# Ejecutar suite de tests
+PATH="$PWD/.venv/bin:$PATH" make test
+
+# Smoke-test de los binarios
+PATH="$PWD/.venv/bin:$PATH" make validate
+
+# Self-test real de GUI sin pantalla
+QT_QPA_PLATFORM=offscreen \
+PATH="$PWD/.venv/bin:$PATH" \
+MPM_PKG_BIN="$PWD/bin/mpm-pkg" \
+bin/mpm --self-test
 ```
 
-Los tests usan `unittest` sin mocking del estado SQLite — los tests de CLI crean bases de datos reales en directorios temporales vía overrides de `XDG_DATA_HOME`.
+Los tests usan `unittest`. La suite actual valida 116 tests, JSON de catálogo/vendor, CLI, workflow, providers, búsqueda, advisor local y compilación de módulos.
 
 ---
 
@@ -331,28 +379,38 @@ mpm-debian-apps   # Debian estable
 mpm-fedora-apps   # Fedora — para .rpm y dnf
 ```
 
-En la versión 0.17 esto se automatizará vía `mpm-pkg setup-host --bootstrap-containers`.
+En la versión 0.18 esto se automatizará de forma segura mediante `setup-host --plan/--apply` y bootstrap Distrobox multi-distro.
 
 ---
 
 ## Hacia un paquete instalable
 
-El objetivo a medio plazo es que MPM sea distribuible como paquete AUR. El trabajo necesario:
+El objetivo a medio plazo es que MPM sea distribuible como paquete AUR, pero el roadmap fue reordenado para no publicar antes de resolver los riesgos principales.
+
+Orden nuevo:
+
+1. `0.15`: seguridad operacional y honestidad.
+2. `0.16`: portabilidad de host base.
+3. `0.17`: `setup-host --check/--plan/--apply`.
+4. `0.18`: Distrobox robusto.
+5. `0.19`: PKGBUILD/AUR.
+6. `0.20`: asistente gráfico de primer uso.
 
 ### Comprobaciones que debe hacer el instalador
 
-Al ejecutar `mpm-pkg setup-host` (disponible en 0.16), el sistema comprueba:
+Al ejecutar `mpm-pkg setup-host --check` (objetivo 0.17), el sistema comprueba:
 
 | Componente | Comprobación | Acción si falta |
 |---|---|---|
+| Distro host | `/etc/os-release` | Clasificar Arch/no-Arch |
 | Python ≥ 3.11 | `python --version` | Error — MPM no puede funcionar |
-| PySide6 | `python -c "import PySide6"` | Instalar via `pacman -S python-pyside6` |
-| flatpak | `which flatpak` | Instalar + añadir Flathub |
-| Helper AUR | `which yay \|\| which paru` | Ofrecer instalar `yay` |
-| snapper | `which snapper` + config root | Instalar + configurar |
-| distrobox | `which distrobox` | Instalar via `pacman -S distrobox` |
-| Contenedores | `distrobox list` | Bootstrap automático |
-| Terminal | `which konsole` | Detectar alternativa disponible |
+| PySide6 | `python -c "import PySide6"` | Recomendar paquete según distro |
+| flatpak | `which flatpak` | Recomendar instalación + Flathub |
+| Helper AUR | `which yay \|\| which paru` | Solo en Arch; revisar PKGBUILD |
+| snapper | `which snapper` + config root | Avisar; snapshot opcional explícito |
+| distrobox/podman | `which distrobox`, `which podman` | Recomendar instalación según distro |
+| Contenedores | `distrobox list` | Plan de creación, no silencioso |
+| Terminal | detección agnóstica | Elegir terminal disponible |
 
 ### Rutas de instalación del paquete AUR
 
@@ -369,11 +427,11 @@ Al ejecutar `mpm-pkg setup-host` (disponible en 0.16), el sistema comprueba:
 /usr/share/applications/mpm-package-installer.desktop
 ```
 
-### PKGBUILD (borrador para 0.18)
+### PKGBUILD (borrador para 0.19)
 
 ```bash
 pkgname=mpm
-pkgver=0.18
+pkgver=0.19
 pkgrel=1
 pkgdesc="Gestor de apps unificado para Arch Linux"
 arch=('any')
@@ -394,13 +452,14 @@ Ver la hoja de ruta completa en [docs/roadmap.md](docs/roadmap.md).
 
 | Versión | Meta principal |
 |---|---|
-| **0.14-mvp** ✓ | Fork autónomo funcional, flatpak + AUR operativos |
-| **0.15** | Portabilidad: snapper opcional, terminal agnóstico, rutas estándar |
-| **0.16** | `mpm-pkg setup-host` — detección e instalación automática de dependencias |
-| **0.17** | Bootstrap automático de contenedores Distrobox |
-| **0.18** | PKGBUILD + publicación en AUR |
-| **0.19** | Asistente gráfico de primer uso |
-| **1.0** | Release estable — instalable, probado, documentado |
+| **0.14-mvp + hardening** ✓ | Base funcional, tests, GUI offscreen, vendor index válido |
+| **0.15** | Seguridad operacional: AUR review, preflight host, Snapper opcional, sudo/terminal |
+| **0.16** | Portabilidad base: distro detection, terminal/escritorio agnóstico, rutas estándar |
+| **0.17** | `setup-host --check/--plan/--apply` seguro |
+| **0.18** | Distrobox robusto: bootstrap multi-distro, manifiestos, uninstall fiable |
+| **0.19** | PKGBUILD + publicación AUR |
+| **0.20** | Asistente gráfico de primer uso |
+| **1.0** | Release estable — honesta, probada, instalable y documentada |
 
 ---
 

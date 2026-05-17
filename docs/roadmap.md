@@ -1,261 +1,431 @@
 # MPM Roadmap
 
-Objetivo final: **paquete AUR instalable con una sola línea** que detecta el host, descarga e instala todas sus dependencias de forma transparente y deja el sistema listo sin intervención manual.
+Objetivo final: **MPM estable, instalable y honesto operacionalmente**. El host primario sigue siendo Arch Linux, pero los backends portables — Flatpak, AppImage y Distrobox — deben degradar correctamente en otras distros sin romper el sistema ni prometer más aislamiento del que existe.
+
+Este roadmap incorpora las conclusiones de:
+
+- `Claude Analisis.md`
+- `impacto en linux.md`
+- `revision-codex.md`
 
 ---
 
-## Estado actual — 0.14-mvp ✓
+## Principio rector
 
-Fork autónomo completo de Malik Store. Operativo en Arch Linux con limitaciones:
+MPM no debe vender una ilusión de estado único.
 
-- ✅ Backends: flatpak, AUR (con yay/paru)
-- ✅ GUI PySide6 funcional
-- ✅ CLI `mpm-pkg` con detect / explain / install / uninstall / history / doctor / repair
-- ✅ Catálogo curado (9 apps) + búsqueda en 8 fuentes (Flatpak, pacman, AUR, APT, DNF, AppImage, vendor)
-- ✅ Bridge Distrobox incluido (`scripts/distrobox/mpm-distrobox-bridge.sh`)
-- ⚠️ Backend pacman bloqueado si Snapper no está configurado
-- ⚠️ Backends Distrobox requieren contenedores creados manualmente
-- ⚠️ `.desktop` asume `konsole` (KDE-only)
+El estado real vive repartido entre:
+
+- `pacman`
+- `yay` / `paru`
+- `flatpak`
+- AppImages copiadas por MPM
+- launchers XDG
+- paquetes `apt` / `dnf` dentro de Distrobox
+- SQLite local de MPM
+
+Por tanto, cada operación debe mostrar:
+
+- qué gestor toca
+- dónde toca
+- si modifica el host
+- si requiere `sudo`
+- si hay snapshot
+- qué datos elimina y cuáles conserva
+- qué estado ha verificado y qué estado solo ha registrado
+
+---
+
+## Estado actual — 0.14-mvp + hardening
+
+Fork autónomo de Malik Store con CLI, GUI, catálogo y búsqueda federada.
+
+### Ya validado
+
+- ✅ CLI `mpm-pkg`: `detect`, `explain`, `install`, `uninstall`, `history`, `doctor`, `repair-app`, `repair-kde`
+- ✅ GUI PySide6 construible con `QT_QPA_PLATFORM=offscreen`
+- ✅ Tests locales: `116` tests pasando
+- ✅ Catálogo curado: 9 apps
+- ✅ Vendor index válido con rutas Cursor AppImage/DEB/RPM
+- ✅ Búsqueda federada: curated, vendor, Flatpak, pacman, AUR, APT, DNF
+- ✅ `make install` instala el bridge Distrobox en instalación local
+- ✅ Config XDG: catálogo y vendor index se buscan en `XDG_CONFIG_HOME`
+- ✅ `mpm-open` ya busca `mpm-pkg` por `MPM_PKG_BIN`, `PATH`, `~/.local/bin`, `/usr/bin`
+- ✅ Rutas `distrobox-apt` y `distrobox-dnf` marcadas como discovery-only desde GUI
+
+### Limitaciones actuales
+
+- ⚠️ `pacman` y `aur` siguen bloqueados sin Snapper root configurado
+- ⚠️ AUR aún usa flags no interactivos que saltan revisión
+- ⚠️ `pacman` usa `--noconfirm` sin preflight rico
+- ⚠️ AppImage/vendor descarga sin verificación SHA256 obligatoria
+- ⚠️ Distrobox no es sandbox de seguridad, solo separa gestores de paquetes
+- ⚠️ Desinstalación Distrobox depende demasiado de `app_id`
+- ⚠️ `.desktop` del handler de paquetes aún asume terminal/flujo KDE en parte de la integración
+- ⚠️ No existe `setup-host`
 - ⚠️ Sin paquete distribuible
 
 ---
 
-## 0.15 — Portabilidad de host
+## Lectura de portabilidad
 
-**Meta:** MPM funciona correctamente en cualquier Arch Linux sin requisitos implícitos.
+MPM tiene dos niveles:
 
-### 0.15.1 — Snapper opcional
+| Capa | Estado |
+|---|---|
+| XDG, SQLite, GUI, búsqueda, scoring | Portable |
+| Flatpak user | Portable |
+| AppImage | Portable con advertencias de librerías e integridad |
+| Distrobox DEB/RPM | Portable si `podman` + `distrobox` existen |
+| pacman/AUR | Arch-only |
+| Snapper | BTRFS/Snapper-only |
+| Bootstrap actual | Arch-only si instala dependencias host con `pacman` |
 
-- Reemplazar el `SystemExit` duro de `ensure_snapper_root_ready` por un flujo de advertencia
-- Añadir flag `--no-snapshot` a `mpm-pkg install` y `uninstall`
-- Si snapper no está disponible, preguntar al usuario: continuar sin snapshot o cancelar
-- Config persistente en `~/.config/mpm/preferences.json`: `"pacman_snapshots": false`
+Decisión de producto:
 
-```
-mpm-pkg install btop --backend pacman
-⚠  Snapper no encontrado. Los cambios no tendrán snapshot de BTRFS.
-   Continuar de todas formas? [y/N]
-```
+> MPM 1.0 será primero excelente en Arch. En otras distros debe funcionar como gestor complementario para Flatpak, AppImage y Distrobox, no como reemplazo del gestor nativo.
 
-### 0.15.2 — Terminal agnóstico
-
-- `mpm-open` detecta el emulador disponible en orden de preferencia:
-  `konsole → gnome-terminal → xfce4-terminal → alacritty → xterm`
-- `.desktop` cambia a `Terminal=true` eliminando la dependencia explícita de Konsole
-- Añadir `X-MPM-RequiresTerminal=true` para que el instalador del paquete lo sepa
-
-### 0.15.3 — Rutas de instalación estándar
-
-- `bin/mpm` y `bin/mpm-pkg` buscan la librería en `/usr/lib/mpm/src` (ya soportado)
-- Bridge script instalado en `/usr/lib/mpm/mpm-distrobox-bridge.sh`
-- Catálogo y vendor index por defecto en `/usr/share/mpm/`
-- Crear `install.sh` standalone para instalación manual sin `make`
+Backends nativos `apt-host`, `dnf-host` o `zypper-host` quedan fuera de 1.0 salvo que el diseño esté ya estabilizado.
 
 ---
 
-## 0.16 — Detección inteligente del host
+## 0.15 — Seguridad operacional y honestidad
 
-**Meta:** `mpm-pkg setup-host` inspecciona el sistema y configura o guía cada backend.
+**Meta:** antes de automatizar más, MPM debe dejar claro qué va a tocar y reducir los riesgos de host.
 
-### 0.16.1 — Comando `setup-host`
+### 0.15.1 — AUR review required
 
-Nuevo subcomando de `mpm-pkg` que ejecuta el flujo completo de setup:
+- Eliminar `--skipreview` por defecto en `paru`
+- Eliminar respuestas automáticas peligrosas en `yay`
+- Añadir flag avanzado explícito:
 
+```bash
+mpm-pkg install paquete-aur --backend aur --aur-skip-review
 ```
-mpm-pkg setup-host
-```
 
-Detecta y reporta:
+- Mostrar alerta fuerte:
+  - AUR es comunitario
+  - el PKGBUILD debe revisarse
+  - la operación modifica el host
 
-| Componente | Comando de comprobación | Acción si falta |
-|---|---|---|
-| Python ≥ 3.11 | `python --version` | Error — MPM no puede funcionar |
-| PySide6 | `python -c "import PySide6"` | Instalar via pacman |
-| flatpak | `which flatpak` | Instalar + añadir Flathub |
-| AUR helper | `which yay \|\| which paru` | Ofrecer instalar yay desde AUR |
-| snapper | `which snapper` | Instalar + guiar configuración root |
-| distrobox | `which distrobox` | Instalar via pacman |
-| Contenedores Distrobox | `distrobox list` | Crear con bootstrap automático |
-| `konsole` / terminal | `which konsole` | Detectar alternativa disponible |
+### 0.15.2 — Preflight host real
 
-### 0.16.2 — Instalación silenciosa de dependencias pacman
+Antes de `pacman`/AUR:
 
-Para las dependencias disponibles en los repositorios oficiales, `setup-host` las instala directamente:
+- listar paquetes que se instalarán
+- listar conflictos/reemplazos si el gestor los reporta
+- mostrar tamaño/descarga cuando sea posible
+- mostrar si se creará snapshot
+- exigir confirmación explícita
 
-```python
-PACMAN_DEPS = {
-    "flatpak":   ("flatpak", ["sudo", "pacman", "-S", "--noconfirm", "flatpak"]),
-    "pyside6":   ("python-pyside6", ["sudo", "pacman", "-S", "--noconfirm", "python-pyside6"]),
-    "snapper":   ("snapper", ["sudo", "pacman", "-S", "--noconfirm", "snapper"]),
-    "distrobox": ("distrobox", ["sudo", "pacman", "-S", "--noconfirm", "distrobox"]),
+No basta con `--dry-run` textual: la GUI debe presentar una confirmación legible.
+
+### 0.15.3 — Snapper opcional pero explícito
+
+- Reemplazar fallo duro de `ensure_snapper_root_ready`
+- Añadir `--no-snapshot`
+- Añadir preferencia persistente:
+
+```json
+{
+  "pacman_snapshots": true
 }
 ```
 
-Para snapper, después de instalarlo configura automáticamente el config root:
+- Si no hay Snapper:
+  - cancelar por defecto
+  - permitir continuar solo con confirmación explícita
+  - registrar en historial que no hubo snapshot
+
+### 0.15.4 — Estrategia sudo/terminal
+
+La GUI no debe confiar en `sudo` dentro de `QProcess` para operaciones host.
+
+Opciones aceptables:
+
+- abrir terminal explícito para operaciones con `sudo`
+- usar `pkexec`/polkit si se implementa bien
+- ejecutar preflight `sudo -v` y fallar con mensaje claro
+
+### 0.15.5 — AppImage/vendor seguro
+
+- Usar `sha256` del vendor index cuando exista
+- Si falta `sha256`, mostrar alerta clara antes de instalar
+- Corregir `Exec=` en `.desktop` generado con quoting XDG robusto
+- Añadir `Icon=` cuando sea posible
+
+### 0.15.6 — Manifiesto post-install
+
+Cada instalación debe producir un manifiesto interno con:
+
+- `backend`
+- `manager`
+- `target`
+- `real_package`
+- `app_id`
+- `desktop_id`
+- `box`
+- `version`
+- `installed_files` cuando sea razonable
+
+Este manifiesto será la base de uninstall, doctor y reconciliación.
+
+---
+
+## 0.16 — Portabilidad de host base
+
+**Meta:** MPM debe detectar el host, degradar bien y eliminar requisitos implícitos KDE/BTRFS/Arch donde no sean estrictos.
+
+### 0.16.1 — Detección de distro
+
+Nuevo módulo de host detection basado en:
+
+- `/etc/os-release`
+- `ID`
+- `ID_LIKE`
+- comandos disponibles: `pacman`, `dnf`, `apt`, `zypper`, `flatpak`, `distrobox`, `podman`
+
+Resultado esperado:
+
+```text
+host-family: arch
+native-manager: pacman
+portable-backends: flatpak, appimage, distrobox
+host-backends: pacman, aur
+snapshot: snapper-root-ready
+desktop: kde
+terminal: konsole
+```
+
+### 0.16.2 — Terminal agnóstico
+
+- `mpm-open` detecta terminal disponible:
+  `konsole`, `gnome-terminal`, `xfce4-terminal`, `alacritty`, `xterm`
+- `.desktop` elimina dependencia directa de Konsole
+- Añadir `X-MPM-RequiresTerminal=true`
+
+### 0.16.3 — Integración de escritorio agnóstica
+
+- `repair-desktop` sustituye o envuelve `repair-kde`
+- Usar `update-desktop-database` como base
+- Ejecutar `kbuildsycoca6/5` solo si existen
+- Mostrar warning si no se puede refrescar menú
+
+### 0.16.4 — Rutas estándar
+
+- `/usr/bin/mpm`
+- `/usr/bin/mpm-pkg`
+- `/usr/bin/mpm-open`
+- `/usr/bin/mpm-host-open-url`
+- `/usr/lib/mpm/src/mpm/`
+- `/usr/lib/mpm/mpm-distrobox-bridge.sh`
+- `/usr/share/mpm/catalog.json`
+- `/usr/share/mpm/vendor_index.json`
+
+### 0.16.5 — Instalador local manual
+
+Crear `install.sh` para instalación manual sin `make`, respetando:
+
+- `~/.local/bin`
+- `~/.local/lib/mpm`
+- `~/.config/mpm`
+- `.desktop` de usuario
+
+---
+
+## 0.17 — `setup-host` seguro
+
+**Meta:** `mpm-pkg setup-host` informa primero y solo modifica el sistema con confirmación explícita.
+
+### 0.17.1 — `setup-host --check`
+
+Modo read-only obligatorio:
+
 ```bash
-sudo snapper -c root create-config /
-sudo systemctl enable --now snapper-timeline.timer snapper-cleanup.timer
+mpm-pkg setup-host --check
 ```
 
-### 0.16.3 — Informe de estado del host
+Debe reportar:
 
+- distro detectada
+- gestor nativo
+- Python / PySide6
+- Flatpak / Flathub
+- AUR helper si host Arch
+- Snapper y estado root
+- Podman / Distrobox
+- contenedores MPM
+- terminal disponible
+- backends disponibles/no disponibles
+
+### 0.17.2 — `setup-host --plan`
+
+Imprime acciones recomendadas sin ejecutarlas.
+
+Ejemplo:
+
+```text
+install flatpak: sudo pacman -S flatpak
+add flathub: flatpak remote-add --if-not-exists ...
+create box: mpm-ubuntu-apps
 ```
-mpm-pkg setup-host --check   # solo informa, no modifica nada
-```
 
-Salida legible:
+### 0.17.3 — `setup-host --apply`
 
-```
-MPM Host Status
-───────────────────────────────────
-python        3.14.0      ✓
-python-pyside6             ✓
-flatpak       1.15.10     ✓  Flathub configurado
-yay           12.4.2      ✓
-snapper                   ✗  instalar: sudo pacman -S snapper
-distrobox     1.8.1       ✓
-  mpm-ubuntu-apps         ✗  ejecutar: mpm-pkg setup-host --bootstrap-containers
-  mpm-debian-apps         ✗
-  mpm-fedora-apps         ✗
+Ejecuta solo con confirmación explícita.
 
-Backends disponibles: flatpak, aur
-Backends no disponibles: pacman (snapper), distrobox-deb, distrobox-rpm, distrobox-apt, distrobox-dnf
+Reglas:
+
+- no instalar dependencias host de forma silenciosa
+- no usar `--noconfirm` sin preflight
+- no configurar Snapper automáticamente sin explicar BTRFS/rollback
+- en no-Arch, no intentar instalar con `pacman`
+
+---
+
+## 0.18 — Distrobox robusto
+
+**Meta:** DEB/RPM funcionan bien sin ensuciar Arch y sin fingir sandbox de seguridad.
+
+### 0.18.1 — Bootstrap multi-distro
+
+Separar:
+
+- bootstrap de dependencias host (`podman`, `distrobox`)
+- creación de cajas
+- instalación de librerías dentro de cajas
+
+Host package manager por distro:
+
+| Host | Dependencias |
+|---|---|
+| Arch | `pacman` |
+| Fedora | `dnf` |
+| Ubuntu/Debian | `apt` |
+| openSUSE | `zypper` |
+
+### 0.18.2 — Manifiesto desde el bridge
+
+El bridge debe devolver JSON con:
+
+- `box`
+- `distro`
+- `manager`
+- `package`
+- `app_id`
+- `desktop_id`
+- `exported_desktop`
+- `repair_actions`
+
+`mpm-pkg` debe guardar ese manifiesto.
+
+### 0.18.3 — Uninstall Distrobox fiable
+
+- No depender solo de `app_id` pasado por CLI
+- Usar manifiesto
+- Detectar stale records
+- Si no puede desinstalar con seguridad, explicar exactamente qué falta
+
+### 0.18.4 — URL bridge reversible
+
+- Documentar que reemplazar `xdg-open` dentro de caja es global
+- Añadir reparación y reversión
+- Registrar si se aplicó el override
+
+### 0.18.5 — Contenedores lazy
+
+Crear cajas bajo demanda solo tras confirmación:
+
+```text
+Contenedor mpm-ubuntu-apps no encontrado.
+Crear ahora? Descargará imagen base y compartirá el HOME del usuario. [y/N]
 ```
 
 ---
 
-## 0.17 — Bootstrap automático de contenedores Distrobox
+## 0.19 — Paquete Arch / AUR
 
-**Meta:** `mpm-pkg setup-host --bootstrap-containers` crea los tres contenedores sin intervención.
+**Meta:** `yay -S mpm` instala MPM completo en Arch.
 
-### 0.17.1 — Bootstrap desde el bridge
+### 0.19.1 — PKGBUILD
 
-El script `mpm-distrobox-bridge.sh bootstrap` ya existe. Hay que:
+- `depends`: Python, PySide6
+- `optdepends`: Flatpak, AUR helper, Snapper, Distrobox, Podman
+- instalar binarios en `/usr/bin`
+- instalar librería en `/usr/lib/mpm`
+- instalar datos en `/usr/share/mpm`
+- instalar `.desktop`
 
-- Exponerlo desde `mpm-pkg setup-host --bootstrap-containers`
-- Mostrar progreso en tiempo real (stdout streaming del proceso distrobox)
-- Manejar el caso de contenedor ya existente (skip silencioso)
-- Instalar paquetes base necesarios dentro de cada contenedor:
-  - Ubuntu: `apt`, `dpkg`, libasound2t64, libfuse2
-  - Fedora: `dnf`, `rpm`, alsa-lib
+### 0.19.2 — Hook post-install
 
-### 0.17.2 — Contenedores lazy (creación bajo demanda)
-
-En lugar de exigir que los contenedores existan antes de usar el backend, crearlos la primera vez que se necesiten:
-
-```
-mpm-pkg install /path/to/app.deb --backend distrobox-deb
-→ Contenedor mpm-ubuntu-apps no encontrado.
-  Crear ahora? Esto descargará ~500 MB. [y/N]
-  [████████████░░░░░░░░] Descargando ubuntu:24.04...
-```
-
----
-
-## 0.18 — PKGBUILD y publicación en AUR
-
-**Meta:** `yay -S mpm` instala MPM completo con todas sus dependencias.
-
-### 0.18.1 — Estructura del PKGBUILD
-
-```bash
-# Maintainer: Eduardo <eduardo76@gmail.com>
-pkgname=mpm
-pkgver=0.18
-pkgrel=1
-pkgdesc="Malik Package Manager — gestor de apps unificado para Arch Linux"
-arch=('any')
-url="https://github.com/usuario/MalikPackageManager"
-license=('custom')
-
-depends=(
-  'python>=3.11'
-  'python-pyside6'
-)
-
-optdepends=(
-  'flatpak: backend Flatpak (Flathub)'
-  'yay: backend AUR'
-  'paru: backend AUR (alternativa a yay)'
-  'snapper: snapshots BTRFS antes de installs con pacman'
-  'distrobox: backends DEB/RPM en contenedores'
-)
-
-source=("$pkgname-$pkgver.tar.gz::https://github.com/usuario/MalikPackageManager/archive/v$pkgver.tar.gz")
-
-package() {
-  install -dm755 "$pkgdir/usr/lib/mpm/src"
-  cp -r src/mpm "$pkgdir/usr/lib/mpm/src/"
-  install -dm755 "$pkgdir/usr/lib/mpm"
-  install -m755 scripts/distrobox/mpm-distrobox-bridge.sh "$pkgdir/usr/lib/mpm/"
-
-  install -dm755 "$pkgdir/usr/bin"
-  install -m755 bin/mpm bin/mpm-pkg bin/mpm-open bin/mpm-host-open-url "$pkgdir/usr/bin/"
-
-  install -dm755 "$pkgdir/usr/share/mpm"
-  install -m644 configs/mpm/catalog.json configs/mpm/vendor_index.json "$pkgdir/usr/share/mpm/"
-
-  install -dm755 "$pkgdir/usr/share/applications"
-  install -m644 configs/desktop/mpm.desktop configs/desktop/mpm-package-installer.desktop \
-    "$pkgdir/usr/share/applications/"
-}
-```
-
-### 0.18.2 — Post-install hook
-
-Script `mpm.install` que se ejecuta tras `pacman -S mpm`:
+Mensaje, no configuración agresiva:
 
 ```bash
 post_install() {
-  echo "==> MPM instalado. Ejecuta 'mpm-pkg setup-host' para configurar backends."
-  echo "    O lanza 'mpm' para abrir la interfaz gráfica."
+  echo "MPM instalado."
+  echo "Ejecuta 'mpm-pkg setup-host --check' para ver backends disponibles."
 }
 ```
 
-### 0.18.3 — Ruta de búsqueda de librería actualizada
+### 0.19.3 — CI de empaquetado
 
-`bin/mpm` ya busca en `/usr/lib/mpm/src` — verificar que el PKGBUILD instala exactamente ahí.
+- `make test`
+- `make validate`
+- `bin/mpm --self-test` con Qt offscreen
+- validar JSON catálogo/vendor
+- `shellcheck` si está disponible
+- construcción de paquete Arch en entorno limpio
 
 ---
 
-## 0.19 — Instalador gráfico de primer uso
+## 0.20 — Asistente gráfico de primer uso
 
-**Meta:** Al abrir MPM por primera vez, un asistente visual configura el sistema.
+**Meta:** la GUI ayuda a configurar sin ocultar riesgos.
 
-- Ventana de bienvenida con lista de backends y su estado (verde/amarillo/rojo)
-- Botón "Configurar" por cada backend no disponible
-- Progreso en tiempo real de cada paso (pacman install, distrobox create, etc.)
-- Posibilidad de omitir backends opcionales
-- Al terminar, guardar `~/.config/mpm/setup-complete: true`
+- estado visual de backends
+- botones por backend
+- explicación de riesgo por ruta
+- terminal/polkit para acciones con privilegios
+- posibilidad de omitir backends
+- guardar `~/.config/mpm/preferences.json`
+
+No debe crear Snapper, instalar AUR ni crear contenedores sin confirmación explícita.
 
 ---
 
 ## 1.0 — Release estable
 
-**Meta:** MPM es un paquete AUR mantenido, estable y usable por cualquier usuario de Arch.
+**Meta:** MPM es estable, probado, instalable y honesto sobre el sistema que toca.
 
 ### Requisitos para 1.0
 
-- [ ] `mpm-pkg setup-host` completo y probado
-- [ ] Bootstrap de contenedores Distrobox automatizado
+- [ ] AUR review required por defecto
+- [ ] Preflight host para pacman/AUR
+- [ ] Snapper opcional con política persistente
+- [ ] Estrategia sudo/terminal resuelta
+- [ ] AppImage/vendor con SHA256 o warning bloqueante/confirmable
+- [ ] Manifiestos post-install
+- [ ] Distrobox DEB/RPM con uninstall fiable
+- [ ] `setup-host --check/--plan/--apply`
+- [ ] Bootstrap Distrobox multi-distro
+- [ ] `.desktop` sin dependencia de Konsole
 - [ ] PKGBUILD publicado en AUR
-- [ ] Backend pacman con snapper opcional
-- [ ] Terminal agnóstico (`.desktop` sin dependencia de Konsole)
-- [ ] Test suite pasando en CI (GitHub Actions)
-- [ ] Catálogo ampliado (≥ 25 apps curadas)
-- [ ] Documentación de usuario completa (README + man page básica)
-- [ ] Vendor index con ≥ 3 rutas de apps de terceros (Cursor, OpenCode, etc.)
+- [ ] CI pasando
+- [ ] Catálogo ampliado a 25 apps curadas
+- [ ] Vendor index con al menos 3 apps de terceros reales
+- [ ] Documentación de usuario completa
 
 ---
 
-## Backlog (post-1.0)
+## Backlog post-1.0
 
 | Feature | Descripción |
 |---|---|
-| Actualizaciones | `mpm-pkg update` — comprueba nuevas versiones por backend |
-| Auto-update de catálogo | Fetch periódico de catálogo remoto (JSON firmado) |
-| Advisor LLM | Integración real con Ollama para sugerencias de policy |
-| Plugin de backends | API pública para añadir backends de terceros |
-| GUI de preferencias | Configurar backends, cajas Distrobox, proxy, etc. desde la UI |
-| Soporte pacman hooks | `mpm-pkg` como hook de pacman para apps que saltan por encima |
-| Firma GPG del catálogo | Verificar integridad del catálogo curado |
+| Backends host no-Arch | `apt-host`, `dnf-host`, `zypper-host` |
+| Actualizaciones | `mpm-pkg update` por backend |
+| Auto-update de catálogo | Fetch periódico de catálogo remoto firmado |
+| Advisor LLM | Integración real con Ollama u otro provider |
+| Plugin de backends | API pública para backends de terceros |
+| GUI de preferencias | Backends, cajas, proxy, riesgo, políticas |
+| Soporte pacman hooks | Detectar apps instaladas fuera de MPM |
+| Firma GPG del catálogo | Integridad del catálogo curado |

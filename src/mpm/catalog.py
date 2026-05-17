@@ -36,6 +36,10 @@ def xdg_data_home() -> Path:
     return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
 
 
+def xdg_config_home() -> Path:
+    return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+
+
 def catalog_candidates() -> list[Path]:
     candidates: list[Path] = []
     override = os.environ.get("MPM_CATALOG")
@@ -48,6 +52,7 @@ def catalog_candidates() -> list[Path]:
 
     candidates.extend(
         [
+            xdg_config_home() / "mpm/catalog.json",
             xdg_data_home() / "mpm/catalog.json",
             Path("/usr/share/mpm/catalog.json"),
         ]

@@ -39,6 +39,7 @@ install-bin:
 	install -m 755 bin/mpm-host-open-url $(BINDIR)/mpm-host-open-url
 	mkdir -p $(LIBDIR)
 	cp -r src/mpm $(LIBDIR)/src/mpm
+	install -m 755 scripts/distrobox/mpm-distrobox-bridge.sh $(LIBDIR)/mpm-distrobox-bridge.sh
 
 install-config:
 	mkdir -p $(CFGDIR)

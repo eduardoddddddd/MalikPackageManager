@@ -233,50 +233,59 @@ def ensure_db() -> sqlite3.Connection:
 
 def record_install(target: str, backend: str, kind: str, source: str, app_id: str | None) -> None:
     conn = ensure_db()
-    with conn:
-        conn.execute(
-            """
-            INSERT INTO installs (target, backend, kind, source, app_id, installed_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (target, backend, kind, source, app_id, int(time.time())),
-        )
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO installs (target, backend, kind, source, app_id, installed_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (target, backend, kind, source, app_id, int(time.time())),
+            )
+    finally:
+        conn.close()
 
 
 def record_repair(target: str, desktop_id: str | None, box: str | None, action: str) -> None:
     conn = ensure_db()
-    with conn:
-        conn.execute(
-            """
-            INSERT INTO repairs (target, desktop_id, box, action, repaired_at)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (target, desktop_id, box, action, int(time.time())),
-        )
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO repairs (target, desktop_id, box, action, repaired_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (target, desktop_id, box, action, int(time.time())),
+            )
+    finally:
+        conn.close()
 
 
 def record_uninstall(plan: UninstallPlan, result: str) -> None:
     conn = ensure_db()
     record = plan.record
-    with conn:
-        conn.execute(
-            """
-            INSERT INTO uninstalls
-              (install_id, target, backend, kind, source, app_id, plan, result, uninstalled_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                record.id,
-                record.target,
-                record.backend,
-                record.kind,
-                record.source,
-                record.app_id,
-                format_uninstall_plan(plan),
-                result,
-                int(time.time()),
-            ),
-        )
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO uninstalls
+                  (install_id, target, backend, kind, source, app_id, plan, result, uninstalled_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.id,
+                    record.target,
+                    record.backend,
+                    record.kind,
+                    record.source,
+                    record.app_id,
+                    format_uninstall_plan(plan),
+                    result,
+                    int(time.time()),
+                ),
+            )
+    finally:
+        conn.close()
 
 
 def row_to_install_record(row: sqlite3.Row | tuple[object, ...]) -> InstallRecord:
@@ -1222,40 +1231,42 @@ def successful_uninstall_rows_for_target(conn: sqlite3.Connection, target_or_app
 
 def resolve_install_record(target_or_record_id: str) -> InstallRecord:
     conn = ensure_db()
+    try:
+        if target_or_record_id.isdigit():
+            record_id = int(target_or_record_id)
+            row = install_row_by_id(conn, record_id)
+            if not row:
+                raise SystemExit(f"active mpm-pkg install record not found: {target_or_record_id}")
+            uninstall = successful_uninstall_for_install(conn, record_id)
+            if uninstall:
+                uninstalled_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(uninstall[2])))
+                raise SystemExit(
+                    f"install record {record_id} has already been successfully uninstalled "
+                    f"(uninstall-id: {uninstall[0]}, at: {uninstalled_at})"
+                )
+            return row_to_install_record(row)
 
-    if target_or_record_id.isdigit():
-        record_id = int(target_or_record_id)
-        row = install_row_by_id(conn, record_id)
-        if not row:
-            raise SystemExit(f"active mpm-pkg install record not found: {target_or_record_id}")
-        uninstall = successful_uninstall_for_install(conn, record_id)
-        if uninstall:
-            uninstalled_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(uninstall[2])))
-            raise SystemExit(
-                f"install record {record_id} has already been successfully uninstalled "
-                f"(uninstall-id: {uninstall[0]}, at: {uninstalled_at})"
-            )
-        return row_to_install_record(row)
-
-    rows = active_install_rows(conn)
-    matches = [
-        row
-        for row in rows
-        if row[1] == target_or_record_id or (row[5] and row[5] == target_or_record_id)
-    ]
-    if not matches:
-        inactive_matches = successful_uninstall_rows_for_target(conn, target_or_record_id)
-        if inactive_matches:
-            ids = ", ".join(str(row[0]) for row in inactive_matches)
-            raise SystemExit(
-                f"matching install record has already been successfully uninstalled; "
-                f"use list-uninstalls for details or choose another active record id: {ids}"
-            )
-        raise SystemExit(f"active mpm-pkg install record not found for: {target_or_record_id}")
-    if len(matches) > 1:
-        ids = ", ".join(str(row[0]) for row in matches)
-        raise SystemExit(f"multiple active records match {target_or_record_id}; use one record id: {ids}")
-    return row_to_install_record(matches[0])
+        rows = active_install_rows(conn)
+        matches = [
+            row
+            for row in rows
+            if row[1] == target_or_record_id or (row[5] and row[5] == target_or_record_id)
+        ]
+        if not matches:
+            inactive_matches = successful_uninstall_rows_for_target(conn, target_or_record_id)
+            if inactive_matches:
+                ids = ", ".join(str(row[0]) for row in inactive_matches)
+                raise SystemExit(
+                    f"matching install record has already been successfully uninstalled; "
+                    f"use list-uninstalls for details or choose another active record id: {ids}"
+                )
+            raise SystemExit(f"active mpm-pkg install record not found for: {target_or_record_id}")
+        if len(matches) > 1:
+            ids = ", ".join(str(row[0]) for row in matches)
+            raise SystemExit(f"multiple active records match {target_or_record_id}; use one record id: {ids}")
+        return row_to_install_record(matches[0])
+    finally:
+        conn.close()
 
 
 def appimage_launcher_id(record: InstallRecord) -> str:
@@ -1539,7 +1550,7 @@ def install_target(args: argparse.Namespace) -> None:
 
     actual_target = Path(download_url(target, dry_run=args.dry_run)) if source == "url" else Path(target)
 
-    if backend in {"distrobox-deb", "distrobox-rpm", "appimage"} and not actual_target.exists():
+    if backend in {"distrobox-deb", "distrobox-rpm", "appimage"} and not args.dry_run and not actual_target.exists():
         raise SystemExit(f"file not found: {actual_target}")
 
     print(explain(str(target), args.backend))
@@ -1563,7 +1574,10 @@ def install_target(args: argparse.Namespace) -> None:
 
 def list_installed() -> None:
     conn = ensure_db()
-    rows = active_install_rows(conn)
+    try:
+        rows = active_install_rows(conn)
+    finally:
+        conn.close()
 
     if not rows:
         print("No mpm-pkg installs recorded yet.")
@@ -1576,13 +1590,16 @@ def list_installed() -> None:
 
 def list_uninstalls() -> None:
     conn = ensure_db()
-    rows = conn.execute(
-        """
-        SELECT id, COALESCE(install_id, ''), target, backend, COALESCE(app_id, ''), result, uninstalled_at
-        FROM uninstalls
-        ORDER BY id DESC
-        """
-    ).fetchall()
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, COALESCE(install_id, ''), target, backend, COALESCE(app_id, ''), result, uninstalled_at
+            FROM uninstalls
+            ORDER BY id DESC
+            """
+        ).fetchall()
+    finally:
+        conn.close()
 
     if not rows:
         print("No mpm-pkg uninstalls recorded yet.")
@@ -1600,78 +1617,80 @@ def history_timestamp(value: int) -> str:
 def print_history() -> None:
     conn = ensure_db()
     entries: list[dict[str, object]] = []
+    try:
+        for row in conn.execute(
+            """
+            SELECT id, target, backend, kind, source, COALESCE(app_id, ''), installed_at
+            FROM installs
+            ORDER BY installed_at DESC, id DESC
+            """
+        ).fetchall():
+            entries.append(
+                {
+                    "operation": "install",
+                    "record_id": row[0],
+                    "install_id": row[0],
+                    "target": row[1],
+                    "backend": row[2],
+                    "result": "recorded",
+                    "timestamp": history_timestamp(int(row[6])),
+                    "kind": row[3],
+                    "source": row[4],
+                    "app_id": row[5],
+                    "log_path": "",
+                }
+            )
 
-    for row in conn.execute(
-        """
-        SELECT id, target, backend, kind, source, COALESCE(app_id, ''), installed_at
-        FROM installs
-        ORDER BY installed_at DESC, id DESC
-        """
-    ).fetchall():
-        entries.append(
-            {
-                "operation": "install",
-                "record_id": row[0],
-                "install_id": row[0],
-                "target": row[1],
-                "backend": row[2],
-                "result": "recorded",
-                "timestamp": history_timestamp(int(row[6])),
-                "kind": row[3],
-                "source": row[4],
-                "app_id": row[5],
-                "log_path": "",
-            }
-        )
+        for row in conn.execute(
+            """
+            SELECT id, COALESCE(install_id, ''), target, backend, kind, source,
+                   COALESCE(app_id, ''), plan, result, uninstalled_at
+            FROM uninstalls
+            ORDER BY uninstalled_at DESC, id DESC
+            """
+        ).fetchall():
+            entries.append(
+                {
+                    "operation": "uninstall",
+                    "record_id": row[0],
+                    "install_id": row[1],
+                    "target": row[2],
+                    "backend": row[3],
+                    "result": row[8],
+                    "timestamp": history_timestamp(int(row[9])),
+                    "kind": row[4],
+                    "source": row[5],
+                    "app_id": row[6],
+                    "detail": row[7],
+                    "log_path": "",
+                }
+            )
 
-    for row in conn.execute(
-        """
-        SELECT id, COALESCE(install_id, ''), target, backend, kind, source,
-               COALESCE(app_id, ''), plan, result, uninstalled_at
-        FROM uninstalls
-        ORDER BY uninstalled_at DESC, id DESC
-        """
-    ).fetchall():
-        entries.append(
-            {
-                "operation": "uninstall",
-                "record_id": row[0],
-                "install_id": row[1],
-                "target": row[2],
-                "backend": row[3],
-                "result": row[8],
-                "timestamp": history_timestamp(int(row[9])),
-                "kind": row[4],
-                "source": row[5],
-                "app_id": row[6],
-                "detail": row[7],
-                "log_path": "",
-            }
-        )
-
-    for row in conn.execute(
-        """
-        SELECT id, target, COALESCE(desktop_id, ''), COALESCE(box, ''),
-               action, repaired_at
-        FROM repairs
-        ORDER BY repaired_at DESC, id DESC
-        """
-    ).fetchall():
-        entries.append(
-            {
-                "operation": "repair",
-                "record_id": row[0],
-                "install_id": "",
-                "target": row[1],
-                "backend": row[3] or "repair",
-                "result": "recorded",
-                "timestamp": history_timestamp(int(row[5])),
-                "desktop_id": row[2],
-                "box": row[3],
-                "detail": row[4],
-                "log_path": "",
-            }
-        )
+        for row in conn.execute(
+            """
+            SELECT id, target, COALESCE(desktop_id, ''), COALESCE(box, ''),
+                   action, repaired_at
+            FROM repairs
+            ORDER BY repaired_at DESC, id DESC
+            """
+        ).fetchall():
+            entries.append(
+                {
+                    "operation": "repair",
+                    "record_id": row[0],
+                    "install_id": "",
+                    "target": row[1],
+                    "backend": row[3] or "repair",
+                    "result": "recorded",
+                    "timestamp": history_timestamp(int(row[5])),
+                    "desktop_id": row[2],
+                    "box": row[3],
+                    "detail": row[4],
+                    "log_path": "",
+                }
+            )
+    finally:
+        conn.close()
 
     entries.sort(key=lambda entry: (str(entry.get("timestamp", "")), int(entry.get("record_id") or 0)), reverse=True)
 

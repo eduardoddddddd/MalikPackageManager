@@ -13,7 +13,15 @@ if [[ ! -e "$target" ]]; then
   exit 1
 fi
 
-mpm_pkg_bin="${MPM_PKG_BIN:-$HOME/.local/bin/mpm-pkg}"
+if [[ -n "${MPM_PKG_BIN:-}" ]]; then
+  mpm_pkg_bin="$MPM_PKG_BIN"
+elif command -v mpm-pkg >/dev/null 2>&1; then
+  mpm_pkg_bin="$(command -v mpm-pkg)"
+elif [[ -x "$HOME/.local/bin/mpm-pkg" ]]; then
+  mpm_pkg_bin="$HOME/.local/bin/mpm-pkg"
+else
+  mpm_pkg_bin="/usr/bin/mpm-pkg"
+fi
 
 if ! command -v "$mpm_pkg_bin" >/dev/null 2>&1 && [[ ! -x "$mpm_pkg_bin" ]]; then
   printf 'mpm-pkg not found: %s\n' "$mpm_pkg_bin" >&2

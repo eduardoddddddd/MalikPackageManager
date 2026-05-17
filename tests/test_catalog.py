@@ -105,6 +105,21 @@ class CatalogValidationTests(unittest.TestCase):
         self.assertIn("invalid catalog", error or "")
         self.assertIn("expected version 1", error or "")
 
+    def test_load_catalog_entries_uses_xdg_config_home(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_home = Path(tmpdir) / "config"
+            catalog_path = config_home / "mpm" / "catalog.json"
+            catalog_path.parent.mkdir(parents=True)
+            catalog_path.write_text(json.dumps(catalog_with(entry())), encoding="utf-8")
+
+            with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(config_home)}, clear=False):
+                with mock.patch("mpm.catalog.repo_root", return_value=None):
+                    entries, path, error = load_catalog_entries()
+
+        self.assertIsNone(error)
+        self.assertEqual(path, catalog_path)
+        self.assertEqual(entries[0]["name"], "Firefox")
+
 
 if __name__ == "__main__":
     unittest.main()

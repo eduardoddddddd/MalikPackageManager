@@ -630,6 +630,8 @@ def vendor_index_candidates() -> list[Path]:
 
     candidates.extend(
         [
+            Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+            / "mpm/vendor_index.json",
             Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
             / "mpm/vendor_index.json",
             Path("/usr/share/mpm/vendor_index.json"),

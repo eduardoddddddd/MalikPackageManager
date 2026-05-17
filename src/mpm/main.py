@@ -77,7 +77,7 @@ def repo_root() -> Path | None:
 
 
 def find_mpm_pkg() -> str | None:
-    override = os.environ.get("MPM_MPM_PKG")
+    override = os.environ.get("MPM_PKG_BIN") or os.environ.get("MPM_MPM_PKG")
     if override:
         return override
 
@@ -771,6 +771,17 @@ class MPMWindow(QMainWindow):
     def install_catalog_selection(self) -> None:
         route = self.selected_catalog_route_entry()
         if route:
+            backend = route.install_backend or route.backend
+            if backend in {"distrobox-apt", "distrobox-dnf"}:
+                QMessageBox.information(
+                    self,
+                    "Discovery only",
+                    f"{backend} routes are searchable in 0.14, but install support is not implemented yet.",
+                )
+                self.append_log(
+                    f"\nCatalog route skipped: {backend} is discovery-only in 0.14.\n"
+                )
+                return
             self.apply_catalog_route(route)
             self.install_target()
 
