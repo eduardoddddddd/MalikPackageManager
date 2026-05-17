@@ -612,7 +612,7 @@ def parse_aur_rpc_search_response(payload: str) -> list[AurSearchEntry]:
 
 
 def fetch_url_text(url: str, timeout: float | None = 3.0) -> str:
-    request = Request(url, headers={"User-Agent": "mpm/0.14 aur-provider"})
+    request = Request(url, headers={"User-Agent": "mpm/0.15 aur-provider"})
     with urlopen(request, timeout=timeout) as response:
         charset = response.headers.get_content_charset() or "utf-8"
         return response.read().decode(charset, errors="replace")

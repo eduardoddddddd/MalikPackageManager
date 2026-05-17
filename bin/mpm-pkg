@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 from dataclasses import dataclass
+import hashlib
 import json
 import os
 import re
@@ -123,6 +124,29 @@ def xdg_data_home() -> Path:
     return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
 
 
+def xdg_config_home() -> Path:
+    return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+
+
+def preferences_path() -> Path:
+    return xdg_config_home() / "mpm" / "preferences.json"
+
+
+def load_preferences() -> dict[str, object]:
+    path = preferences_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def pacman_snapshots_enabled() -> bool:
+    return bool(load_preferences().get("pacman_snapshots", True))
+
+
 def state_dir() -> Path:
     return xdg_data_home() / "mpm" / "mpm-pkg"
 
@@ -227,20 +251,88 @@ def ensure_db() -> sqlite3.Connection:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS install_manifests (
+          install_id INTEGER PRIMARY KEY,
+          backend TEXT NOT NULL,
+          manager TEXT NOT NULL,
+          target TEXT NOT NULL,
+          real_package TEXT,
+          app_id TEXT,
+          desktop_id TEXT,
+          box TEXT,
+          version TEXT,
+          installed_files_json TEXT NOT NULL DEFAULT '[]',
+          manifest_json TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_install_manifests_app_id ON install_manifests(app_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_install_manifests_desktop_id ON install_manifests(desktop_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_install_manifests_box ON install_manifests(box)")
     conn.commit()
     return conn
 
 
-def record_install(target: str, backend: str, kind: str, source: str, app_id: str | None) -> None:
+def record_install(target: str, backend: str, kind: str, source: str, app_id: str | None) -> int:
     conn = ensure_db()
     try:
         with conn:
-            conn.execute(
+            cursor = conn.execute(
                 """
                 INSERT INTO installs (target, backend, kind, source, app_id, installed_at)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (target, backend, kind, source, app_id, int(time.time())),
+            )
+        return int(cursor.lastrowid)
+    finally:
+        conn.close()
+
+
+def manifest_field(manifest: dict[str, object], key: str) -> str | None:
+    value = manifest.get(key)
+    if value is None:
+        return None
+    return str(value)
+
+
+def manifest_files_json(manifest: dict[str, object]) -> str:
+    files = manifest.get("installed_files")
+    if not isinstance(files, list):
+        files = []
+    return json.dumps([str(item) for item in files], ensure_ascii=False)
+
+
+def record_install_manifest(install_id: int, manifest: dict[str, object]) -> None:
+    created_at = int(time.time())
+    manifest = {"schema": 1, "created_at": created_at, **manifest}
+    conn = ensure_db()
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO install_manifests
+                  (install_id, backend, manager, target, real_package, app_id, desktop_id, box,
+                   version, installed_files_json, manifest_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    install_id,
+                    manifest_field(manifest, "backend") or "unknown",
+                    manifest_field(manifest, "manager") or "unknown",
+                    manifest_field(manifest, "target") or "",
+                    manifest_field(manifest, "real_package"),
+                    manifest_field(manifest, "app_id"),
+                    manifest_field(manifest, "desktop_id"),
+                    manifest_field(manifest, "box"),
+                    manifest_field(manifest, "version"),
+                    manifest_files_json(manifest),
+                    json.dumps(manifest, ensure_ascii=False, sort_keys=True),
+                    created_at,
+                ),
             )
     finally:
         conn.close()
@@ -373,6 +465,78 @@ def download_url(url: str, *, dry_run: bool = False) -> Path:
     return dest
 
 
+def vendor_index_candidates() -> list[Path]:
+    candidates: list[Path] = [xdg_config_home() / "mpm/vendor_index.json"]
+    root = repo_root()
+    if root:
+        candidates.append(root / "configs/mpm/vendor_index.json")
+    candidates.extend(
+        [
+            Path.home() / ".config/mpm/vendor_index.json",
+            Path("/etc/mpm/vendor_index.json"),
+            Path("/usr/share/mpm/vendor_index.json"),
+        ]
+    )
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for candidate in candidates:
+        if candidate not in seen:
+            seen.add(candidate)
+            unique.append(candidate)
+    return unique
+
+
+def vendor_route_metadata_for_url(url: str) -> dict[str, str]:
+    for candidate in vendor_index_candidates():
+        if not candidate.exists():
+            continue
+        try:
+            data = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        entries = data.get("entries") if isinstance(data, dict) else None
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            routes = entry.get("routes")
+            if not isinstance(routes, list):
+                continue
+            for route in routes:
+                if not isinstance(route, dict) or route.get("url") != url:
+                    continue
+                return {
+                    "sha256": str(route.get("sha256") or ""),
+                    "app_id": str(route.get("app_id") or entry.get("id") or ""),
+                    "version": str(route.get("version") or ""),
+                    "icon": str(route.get("icon") or route.get("app_id") or entry.get("id") or ""),
+                }
+    return {}
+
+
+def verify_sha256(path: Path, expected: str, *, dry_run: bool = False) -> None:
+    expected = expected.strip().lower()
+    if not expected:
+        return
+    print(f"+ verify sha256 {path}")
+    if dry_run:
+        return
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    actual = digest.hexdigest()
+    if actual != expected:
+        raise SystemExit(f"sha256 mismatch for {path}: expected {expected}, got {actual}")
+
+
+def desktop_exec_path(path: Path) -> str:
+    value = str(path)
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$").replace("`", "\\`")
+    return f'"{escaped}"'
+
+
 def ensure_snapper_root_ready(*, dry_run: bool = False) -> None:
     if dry_run:
         return
@@ -382,7 +546,11 @@ def ensure_snapper_root_ready(*, dry_run: bool = False) -> None:
         raise SystemExit("Host package install requires Snapper root config at /etc/snapper/configs/root.")
 
 
-def snapper_root_status() -> str:
+def snapper_root_status(*, no_snapshot: bool = False) -> str:
+    if no_snapshot:
+        return "absent: disabled by explicit --no-snapshot"
+    if not pacman_snapshots_enabled():
+        return "absent: disabled by pacman_snapshots preference"
     if not shutil.which("snapper"):
         return "absent: snapper command not found"
     if not Path("/etc/snapper/configs/root").exists():
@@ -392,6 +560,10 @@ def snapper_root_status() -> str:
 
 def host_install_snapshot_description(target: str, backend: str) -> str:
     return f"pre-mpm-pkg-{backend}: {target}"
+
+
+def should_create_host_snapshot(*, no_snapshot: bool = False) -> bool:
+    return pacman_snapshots_enabled() and not no_snapshot
 
 
 def create_pre_host_snapshot(target: str, backend: str, *, dry_run: bool = False) -> None:
@@ -413,8 +585,61 @@ def create_pre_host_snapshot(target: str, backend: str, *, dry_run: bool = False
     )
 
 
-def format_host_install_preflight(target: str, backend: str, manager: str, command: list[str]) -> str:
+def create_optional_pre_host_snapshot(target: str, backend: str, *, dry_run: bool = False, no_snapshot: bool = False) -> None:
+    if not should_create_host_snapshot(no_snapshot=no_snapshot):
+        print("+ skip snapper snapshot")
+        return
+    create_pre_host_snapshot(target, backend, dry_run=dry_run)
+
+
+def ensure_sudo_ready(*, dry_run: bool = False) -> None:
+    if dry_run:
+        return
+    if not shutil.which("sudo"):
+        raise SystemExit("host package operation requires sudo, but sudo is not installed.")
+    status = subprocess.run(["sudo", "-n", "-v"], text=True, capture_output=True, check=False).returncode
+    if status != 0:
+        raise SystemExit(
+            "host package operation requires an active sudo session. "
+            "Run sudo -v in a terminal first, or launch MPM from a terminal that can authenticate sudo."
+        )
+
+
+def pacman_install_preview(target: str) -> list[str]:
+    if not shutil.which("pacman"):
+        return ["pacman-preview: pacman command not available"]
+    proc = subprocess.run(
+        ["pacman", "-S", "--needed", "--print-format", "%n\t%v\t%l\t%s", target],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        detail = proc.stderr.strip().splitlines()[-1:] or [f"pacman exited with {proc.returncode}"]
+        return [f"pacman-preview: unavailable: {detail[0]}"]
+    rows = [line for line in proc.stdout.splitlines() if line.strip()]
+    if not rows:
+        return ["pacman-preview: no package downloads reported; target may already be installed"]
+    preview = ["pacman-preview:"]
+    for row in rows[:12]:
+        name, version, location, size = (row.split("\t") + ["", "", "", ""])[:4]
+        preview.append(f"{name or target} {version or 'unknown-version'} {size or 'unknown-size'} {location or 'local/sync'}")
+    if len(rows) > 12:
+        preview.append(f"... {len(rows) - 12} more package(s)")
+    return preview
+
+
+def format_host_install_preflight(
+    target: str,
+    backend: str,
+    manager: str,
+    command: list[str],
+    *,
+    no_snapshot: bool = False,
+) -> str:
     snapshot_description = host_install_snapshot_description(target, backend)
+    snapshot_status = snapper_root_status(no_snapshot=no_snapshot)
+    preview_lines = pacman_install_preview(target) if backend == "pacman" else ["aur-preview: helper will show PKGBUILD/review and dependency details interactively"]
     lines = [
         "host-preflight:",
         f"target: {target}",
@@ -423,15 +648,19 @@ def format_host_install_preflight(target: str, backend: str, manager: str, comma
         "host-mutation: yes",
         "sudo-required: yes",
         f"package-request: {target}",
-        "packages: manager will resolve dependencies during the transaction",
+        "packages:",
+        *[f"  - {line}" for line in preview_lines],
         "conflicts-replacements: review the package manager output before accepting",
-        f"snapshot-status: {snapper_root_status()}",
+        f"snapshot-status: {snapshot_status}",
         f"expected snapshot description: {snapshot_description}",
         "commands:",
         "  - " + shlex.join([str(arg) for arg in command]),
         "warnings:",
         "  - This operation modifies the real host package database.",
+        "  - Real host installs require --yes after reviewing this preflight.",
     ]
+    if snapshot_status.startswith("absent:"):
+        lines.append("  - No snapshot will be created; rollback is manual and may be impossible.")
     if backend == "aur":
         lines.extend(
             [
@@ -442,11 +671,19 @@ def format_host_install_preflight(target: str, backend: str, manager: str, comma
     return "\n".join(lines)
 
 
-def install_pacman(target: str, *, dry_run: bool) -> None:
+def install_pacman(target: str, *, dry_run: bool, no_snapshot: bool = False) -> dict[str, object]:
     command = ["sudo", "pacman", "-S", "--needed", "--noconfirm", target]
-    print(format_host_install_preflight(target, "pacman", "pacman", command))
-    create_pre_host_snapshot(target, "pacman", dry_run=dry_run)
+    print(format_host_install_preflight(target, "pacman", "pacman", command, no_snapshot=no_snapshot))
+    ensure_sudo_ready(dry_run=dry_run)
+    create_optional_pre_host_snapshot(target, "pacman", dry_run=dry_run, no_snapshot=no_snapshot)
     run(command, dry_run=dry_run)
+    return {
+        "backend": "pacman",
+        "manager": "pacman",
+        "target": target,
+        "real_package": target,
+        "snapshot": "none" if not should_create_host_snapshot(no_snapshot=no_snapshot) else host_install_snapshot_description(target, "pacman"),
+    }
 
 
 def aur_helper() -> str:
@@ -468,15 +705,31 @@ def aur_install_args(helper: str, target: str, *, skip_review: bool = False) -> 
     return args
 
 
-def install_aur(target: str, *, dry_run: bool, skip_review: bool = False) -> None:
+def install_aur(
+    target: str,
+    *,
+    dry_run: bool,
+    skip_review: bool = False,
+    no_snapshot: bool = False,
+) -> dict[str, object]:
     helper = aur_helper()
     command = aur_install_args(helper, target, skip_review=skip_review)
-    print(format_host_install_preflight(target, "aur", Path(helper).name, command))
-    create_pre_host_snapshot(target, "aur", dry_run=dry_run)
+    manager = Path(helper).name
+    print(format_host_install_preflight(target, "aur", manager, command, no_snapshot=no_snapshot))
+    ensure_sudo_ready(dry_run=dry_run)
+    create_optional_pre_host_snapshot(target, "aur", dry_run=dry_run, no_snapshot=no_snapshot)
     run(command, dry_run=dry_run)
+    return {
+        "backend": "aur",
+        "manager": manager,
+        "target": target,
+        "real_package": target,
+        "snapshot": "none" if not should_create_host_snapshot(no_snapshot=no_snapshot) else host_install_snapshot_description(target, "aur"),
+        "aur_skip_review": skip_review,
+    }
 
 
-def install_flatpak(target: str, *, dry_run: bool) -> None:
+def install_flatpak(target: str, *, dry_run: bool) -> dict[str, object]:
     if not shutil.which("flatpak"):
         raise SystemExit("Flatpak backend requested, but flatpak is not installed.")
     run(
@@ -491,9 +744,18 @@ def install_flatpak(target: str, *, dry_run: bool) -> None:
         dry_run=dry_run,
     )
     run(["flatpak", "--user", "install", "-y", "flathub", target], dry_run=dry_run)
+    return {
+        "backend": "flatpak",
+        "manager": "flatpak",
+        "target": target,
+        "real_package": target,
+        "app_id": target,
+        "desktop_id": f"{target}.desktop",
+        "installed_files": [],
+    }
 
 
-def install_appimage(path: Path, *, app_id: str | None, dry_run: bool) -> Path:
+def install_appimage(path: Path, *, app_id: str | None, icon: str | None = None, dry_run: bool) -> dict[str, object]:
     app_dir = xdg_data_home() / "mpm" / "appimages"
     applications_dir = xdg_data_home() / "applications"
     app_dir.mkdir(parents=True, exist_ok=True)
@@ -508,20 +770,31 @@ def install_appimage(path: Path, *, app_id: str | None, dry_run: bool) -> Path:
         "[Desktop Entry]\n"
         "Type=Application\n"
         f"Name={path.stem}\n"
-        f"Exec={target}\n"
+        f"Exec={desktop_exec_path(target)}\n"
         "Terminal=false\n"
         "Categories=Utility;\n"
         f"X-MalikOS-Backend=appimage\n"
     )
+    icon_name = icon or app_id
+    if icon_name:
+        desktop_text += f"Icon={icon_name}\n"
     print(f"+ write {desktop_file}")
     if not dry_run:
         desktop_file.write_text(desktop_text, encoding="utf-8")
         run(["chmod", "0644", desktop_file], dry_run=False)
         repair_kde(dry_run=False)
-    return target
+    return {
+        "backend": "appimage",
+        "manager": "mpm-appimage",
+        "target": str(path),
+        "real_package": str(target),
+        "app_id": launcher_id,
+        "desktop_id": desktop_file.name,
+        "installed_files": [str(target), str(desktop_file)],
+    }
 
 
-def install_distrobox_file(backend: str, path: Path, app_id: str | None, *, dry_run: bool) -> None:
+def install_distrobox_file(backend: str, path: Path, app_id: str | None, *, dry_run: bool) -> dict[str, object]:
     script = bridge_script()
     if not script.exists():
         raise SystemExit(f"Distrobox bridge script not found: {script}")
@@ -531,6 +804,16 @@ def install_distrobox_file(backend: str, path: Path, app_id: str | None, *, dry_
     if app_id:
         argv.append(app_id)
     run(argv, dry_run=dry_run)
+    box = STANDARD_BOXES["ubuntu"] if backend == "distrobox-deb" else STANDARD_BOXES["fedora"]
+    return {
+        "backend": backend,
+        "manager": "apt" if backend == "distrobox-deb" else "dnf",
+        "target": str(path),
+        "real_package": path.name,
+        "app_id": app_id,
+        "box": box,
+        "installed_files": [],
+    }
 
 
 def normalize_token(value: str) -> str:
@@ -1558,6 +1841,7 @@ def print_uninstall_plan(plan: UninstallPlan) -> None:
 def run_uninstall_plan(plan: UninstallPlan, *, dry_run: bool) -> None:
     record = plan.record
     if record.backend in {"pacman", "aur"}:
+        ensure_sudo_ready(dry_run=dry_run)
         create_pre_host_snapshot(record.target, f"uninstall-{record.backend}", dry_run=dry_run)
         run(["sudo", "pacman", "-R", record.target], dry_run=dry_run)
         return
@@ -1594,28 +1878,52 @@ def install_target(args: argparse.Namespace) -> None:
     if backend == "unknown":
         raise SystemExit("Cannot install URL without .deb, .rpm, or .AppImage suffix yet.")
 
+    vendor_metadata = vendor_route_metadata_for_url(target) if source == "url" else {}
+    expected_sha256 = (args.sha256 or vendor_metadata.get("sha256") or "").strip()
+    app_id = args.app_id or vendor_metadata.get("app_id") or None
+    icon = args.icon or vendor_metadata.get("icon") or app_id
+
     actual_target = Path(download_url(target, dry_run=args.dry_run)) if source == "url" else Path(target)
+    if expected_sha256:
+        verify_sha256(actual_target, expected_sha256, dry_run=args.dry_run)
+    elif source == "url" and backend in {"appimage", "distrobox-deb", "distrobox-rpm"}:
+        print("warning: vendor artifact has no pinned sha256; origin and integrity are not verified by MPM")
 
     if backend in {"distrobox-deb", "distrobox-rpm", "appimage"} and not args.dry_run and not actual_target.exists():
         raise SystemExit(f"file not found: {actual_target}")
 
     print(explain(str(target), args.backend))
 
+    manifest: dict[str, object] | None = None
+    if backend in {"pacman", "aur"} and not args.dry_run and not args.yes:
+        raise SystemExit("host package install requires --yes after reviewing --dry-run preflight output")
+
     if backend == "pacman":
-        install_pacman(target, dry_run=args.dry_run)
+        manifest = install_pacman(target, dry_run=args.dry_run, no_snapshot=args.no_snapshot)
     elif backend == "aur":
-        install_aur(target, dry_run=args.dry_run, skip_review=args.aur_skip_review)
+        manifest = install_aur(
+            target,
+            dry_run=args.dry_run,
+            skip_review=args.aur_skip_review,
+            no_snapshot=args.no_snapshot,
+        )
     elif backend == "flatpak":
-        install_flatpak(target, dry_run=args.dry_run)
+        manifest = install_flatpak(target, dry_run=args.dry_run)
     elif backend in {"distrobox-deb", "distrobox-rpm"}:
-        install_distrobox_file(backend, actual_target, args.app_id, dry_run=args.dry_run)
+        manifest = install_distrobox_file(backend, actual_target, app_id, dry_run=args.dry_run)
     elif backend == "appimage":
-        install_appimage(actual_target, app_id=args.app_id, dry_run=args.dry_run)
+        manifest = install_appimage(actual_target, app_id=app_id, icon=icon, dry_run=args.dry_run)
     else:
         raise SystemExit(f"backend is not installable yet: {backend}")
 
     if not args.dry_run:
-        record_install(str(target), backend, kind, source, args.app_id)
+        install_id = record_install(str(target), backend, kind, source, app_id)
+        if manifest:
+            if expected_sha256:
+                manifest["sha256"] = expected_sha256
+            if vendor_metadata.get("version"):
+                manifest["version"] = vendor_metadata["version"]
+            record_install_manifest(install_id, manifest)
 
 
 def list_installed() -> None:
@@ -1664,6 +1972,21 @@ def print_history() -> None:
     conn = ensure_db()
     entries: list[dict[str, object]] = []
     try:
+        manifest_rows = conn.execute(
+            """
+            SELECT install_id, manifest_json
+            FROM install_manifests
+            """
+        ).fetchall()
+        manifests: dict[int, dict[str, object]] = {}
+        for manifest_row in manifest_rows:
+            try:
+                manifest_data = json.loads(str(manifest_row[1]))
+            except json.JSONDecodeError:
+                manifest_data = {}
+            if isinstance(manifest_data, dict):
+                manifests[int(manifest_row[0])] = manifest_data
+
         for row in conn.execute(
             """
             SELECT id, target, backend, kind, source, COALESCE(app_id, ''), installed_at
@@ -1686,6 +2009,8 @@ def print_history() -> None:
                     "log_path": "",
                 }
             )
+            if int(row[0]) in manifests:
+                entries[-1]["manifest"] = manifests[int(row[0])]
 
         for row in conn.execute(
             """
@@ -1750,7 +2075,7 @@ def print_history() -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=APP_NAME)
-    parser.add_argument("--version", action="version", version="mpm-pkg 0.14-mvp")
+    parser.add_argument("--version", action="version", version="mpm-pkg 0.15")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     detect_parser = subparsers.add_parser("detect", help="detect target type and default backend")
@@ -1764,7 +2089,15 @@ def build_parser() -> argparse.ArgumentParser:
     install_parser.add_argument("target")
     install_parser.add_argument("--backend", choices=sorted(BACKENDS))
     install_parser.add_argument("--app-id", help="desktop app id to export/register when needed")
+    install_parser.add_argument("--sha256", help="expected artifact sha256 for downloaded vendor files")
+    install_parser.add_argument("--icon", help="desktop icon name/path to use for AppImage launchers")
     install_parser.add_argument("--dry-run", action="store_true")
+    install_parser.add_argument("--yes", action="store_true", help="confirm host install after reviewing dry-run preflight")
+    install_parser.add_argument(
+        "--no-snapshot",
+        action="store_true",
+        help="advanced host override: continue without creating a Snapper snapshot",
+    )
     install_parser.add_argument(
         "--aur-skip-review",
         action="store_true",

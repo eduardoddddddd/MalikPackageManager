@@ -1,6 +1,6 @@
 # MPM — Malik Package Manager
 
-Versión **0.14-mvp + hardening** · Host primario Arch Linux · Python 3 + PySide6
+Versión **0.15 seguridad operacional** · Host primario Arch Linux · Python 3 + PySide6
 
 Gestor de aplicaciones unificado para Arch Linux. Instala y gestiona apps a través de múltiples backends — Flatpak, pacman, AUR, AppImage y paquetes DEB/RPM en contenedores Distrobox — bajo una política consistente y con registro completo de historial.
 
@@ -43,17 +43,17 @@ Distrobox mantiene DEB/RPM fuera del gestor Arch, pero **no es un sandbox de seg
 | Backend | Qué instala | Requiere |
 |---|---|---|
 | `flatpak` | Flatpak de usuario (Flathub) | `flatpak` |
-| `pacman` | Paquetes del host Arch | `pacman` + `snapper`* |
+| `pacman` | Paquetes del host Arch | `pacman` + preflight host |
 | `aur` | Paquetes AUR vía `yay`/`paru` | helper AUR |
-| `appimage` | Bundles AppImage de vendor | — |
+| `appimage` | Bundles AppImage de vendor | checksum recomendado |
 | `distrobox-deb` | Archivos `.deb` en contenedor Ubuntu | `distrobox` + caja `mpm-ubuntu-apps` |
 | `distrobox-rpm` | Archivos `.rpm` en contenedor Fedora | `distrobox` + caja `mpm-fedora-apps` |
-| `distrobox-apt` | Búsqueda APT en contenedor Ubuntu | `discovery-only` en 0.14 |
-| `distrobox-dnf` | Búsqueda DNF en contenedor Fedora | `discovery-only` en 0.14 |
+| `distrobox-apt` | Búsqueda APT en contenedor Ubuntu | `discovery-only` en 0.15 |
+| `distrobox-dnf` | Búsqueda DNF en contenedor Fedora | `discovery-only` en 0.15 |
 
-> \* El backend `pacman` crea un snapshot BTRFS automático antes de cada operación. Requiere Snapper con config root (`/etc/snapper/configs/root`). En la versión 0.15 esto será opcional.
+> `pacman`/AUR hacen preflight host, exigen confirmación explícita con `--yes` para instalar de verdad y crean snapshot Snapper si está disponible. Sin Snapper, MPM cancela por defecto; continuar requiere `--no-snapshot` o preferencia explícita `pacman_snapshots: false`.
 
-> AUR sigue siendo comunitario. El roadmap reestructura 0.15 para requerir revisión de PKGBUILD por defecto y evitar instalaciones AUR silenciosas.
+> AUR sigue siendo comunitario. MPM no usa `paru --skipreview` por defecto ni auto-responde prompts peligrosos de `yay`; `--aur-skip-review` es un override avanzado explícito.
 
 ---
 
@@ -65,10 +65,10 @@ Distrobox mantiene DEB/RPM fuera del gestor Arch, pero **no es un sandbox de seg
 | `aur` backend | ✅ Operativo con `yay` o `paru` |
 | GUI búsqueda y exploración | ✅ Validado con PySide6 en venv y Qt offscreen |
 | Catálogo/vendor index | ✅ JSON validado; vendor index incluye rutas Cursor |
-| `pacman` backend | ⚠️ Bloqueado sin Snapper configurado (se resuelve en 0.15) |
+| `pacman` backend | ✅ Preflight host, confirmación `--yes`, Snapper explícito |
 | `distrobox-deb/rpm` | ⚠️ Requiere contenedores creados; se endurece en 0.18 |
 | `distrobox-apt/dnf` | ⚠️ Búsqueda solamente; instalación no implementada |
-| Integración `.desktop` | ⚠️ Aún necesita terminal/escritorio agnóstico |
+| Integración `.desktop` | ⚠️ Handler externo aún necesita terminal/escritorio agnóstico |
 | Host no-Arch | ⚠️ Flatpak/AppImage/Distrobox pueden ser portables; pacman/AUR son Arch-only |
 
 ---
@@ -125,7 +125,7 @@ MalikPackageManager/
 **Por backend (opcionales):**
 - `flatpak` — backend Flatpak; añadir Flathub: `flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo`
 - `yay` o `paru` — backend AUR
-- `snapper` con config root — backend pacman (snapshots BTRFS automáticos)
+- `snapper` con config root — snapshots BTRFS automáticos para `pacman`/AUR; se puede desactivar explícitamente
 - `distrobox` — backends DEB/RPM/APT/DNF
 
 **Contenedores Distrobox** (opcionales, bootstrap robusto en 0.18):
@@ -202,12 +202,18 @@ mpm-pkg explain btop --backend pacman
 
 # Instalar
 mpm-pkg install org.mozilla.firefox --backend flatpak
-mpm-pkg install btop --backend pacman
+mpm-pkg install btop --backend pacman --dry-run
+mpm-pkg install btop --backend pacman --yes
 mpm-pkg install /ruta/vendor.deb --backend distrobox-deb
+mpm-pkg install paquete-aur --backend aur --aur-skip-review --dry-run
 
 # Dry run (muestra comandos, no ejecuta)
 mpm-pkg install btop --backend pacman --dry-run
 mpm-pkg install https://vendor.example/app.deb --backend distrobox-deb --dry-run
+
+# Overrides avanzados de seguridad host/vendor
+mpm-pkg install paquete --backend pacman --yes --no-snapshot
+mpm-pkg install /ruta/app.AppImage --backend appimage --sha256 HASH --icon app
 
 # Listar apps instaladas
 mpm-pkg list-installed
@@ -453,7 +459,7 @@ Ver la hoja de ruta completa en [docs/roadmap.md](docs/roadmap.md).
 | Versión | Meta principal |
 |---|---|
 | **0.14-mvp + hardening** ✓ | Base funcional, tests, GUI offscreen, vendor index válido |
-| **0.15** | Seguridad operacional: AUR review, preflight host, Snapper opcional, sudo/terminal |
+| **0.15** ✓ | Seguridad operacional: AUR review, preflight host, Snapper opcional, sudo/terminal, AppImage seguro, manifiestos |
 | **0.16** | Portabilidad base: distro detection, terminal/escritorio agnóstico, rutas estándar |
 | **0.17** | `setup-host --check/--plan/--apply` seguro |
 | **0.18** | Distrobox robusto: bootstrap multi-distro, manifiestos, uninstall fiable |

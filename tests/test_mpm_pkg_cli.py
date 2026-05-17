@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import subprocess
 import os
 import sqlite3
@@ -35,6 +36,18 @@ def run_mpm_pkg_env(env: dict[str, str], *args: str) -> str:
         env=merged_env,
     )
     return result.stdout
+
+
+def run_mpm_pkg_failure(env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+    merged_env = os.environ.copy()
+    merged_env.update(env)
+    return subprocess.run(
+        [sys.executable, str(MPM_PKG), *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=merged_env,
+    )
 
 
 def create_install_record(
@@ -184,6 +197,57 @@ class MalikpkgCliTests(unittest.TestCase):
         pacman_index = output.index("+ sudo pacman -S --needed --noconfirm btop")
         self.assertLess(snapshot_index, pacman_index)
 
+    def test_pacman_dry_run_with_no_snapshot_warns_snapshot_absent(self) -> None:
+        output = run_mpm_pkg("install", "--dry-run", "btop", "--backend", "pacman", "--no-snapshot")
+
+        self.assertIn("snapshot-status: absent: disabled by explicit --no-snapshot", output)
+        self.assertIn("No snapshot will be created", output)
+        self.assertIn("+ skip snapper snapshot", output)
+        self.assertNotIn("+ sudo snapper -c root create", output)
+
+    def test_pacman_dry_run_honors_snapshot_preference(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Path(tmpdir) / "mpm"
+            config.mkdir()
+            (config / "preferences.json").write_text('{"pacman_snapshots": false}', encoding="utf-8")
+
+            output = run_mpm_pkg_env(
+                {"XDG_CONFIG_HOME": tmpdir},
+                "install",
+                "--dry-run",
+                "btop",
+                "--backend",
+                "pacman",
+            )
+
+        self.assertIn("snapshot-status: absent: disabled by pacman_snapshots preference", output)
+        self.assertIn("+ skip snapper snapshot", output)
+
+    def test_host_install_requires_yes_after_preflight_review(self) -> None:
+        result = run_mpm_pkg_failure({}, "install", "btop", "--backend", "pacman")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("host package install requires --yes", result.stderr)
+
+    def test_host_install_requires_cached_sudo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fake_bin = Path(tmpdir) / "bin"
+            fake_bin.mkdir()
+            write_executable(fake_bin / "sudo", "#!/bin/sh\nexit 1\n")
+
+            result = run_mpm_pkg_failure(
+                {"PATH": str(fake_bin)},
+                "install",
+                "btop",
+                "--backend",
+                "pacman",
+                "--yes",
+                "--no-snapshot",
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("requires an active sudo session", result.stderr)
+
     def test_aur_paru_dry_run_requires_review_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
@@ -246,6 +310,67 @@ class MalikpkgCliTests(unittest.TestCase):
         self.assertNotIn("--answerclean", output)
         self.assertNotIn("--answerdiff", output)
         self.assertNotIn("--answeredit", output)
+
+    def test_appimage_url_dry_run_warns_when_sha256_missing(self) -> None:
+        output = run_mpm_pkg(
+            "install",
+            "https://vendor.example/Cool.AppImage",
+            "--backend",
+            "appimage",
+            "--dry-run",
+        )
+
+        self.assertIn("warning: vendor artifact has no pinned sha256", output)
+
+    def test_appimage_install_verifies_sha256_quotes_exec_and_records_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            source = tmp / "Cool App.AppImage"
+            source.write_bytes(b"appimage payload")
+            expected = hashlib.sha256(source.read_bytes()).hexdigest()
+            xdg_data_home = tmp / "xdg"
+
+            run_mpm_pkg_env(
+                {"XDG_DATA_HOME": str(xdg_data_home), "MPM_DISTROBOX_BRIDGE": str(tmp / "missing-bridge")},
+                "install",
+                str(source),
+                "--backend",
+                "appimage",
+                "--app-id",
+                "cool",
+                "--icon",
+                "cool",
+                "--sha256",
+                expected,
+            )
+            desktop = xdg_data_home / "applications" / "mpm-appimage-cool.desktop"
+            history = run_mpm_pkg_env({"XDG_DATA_HOME": str(xdg_data_home)}, "history")
+            desktop_text = desktop.read_text(encoding="utf-8")
+
+        self.assertIn('Exec="' + str(xdg_data_home / "mpm/appimages/Cool App.AppImage") + '"', desktop_text)
+        self.assertIn("Icon=cool", desktop_text)
+        self.assertIn('"manifest"', history)
+        self.assertIn('"manager": "mpm-appimage"', history)
+        self.assertIn('"sha256": "' + expected + '"', history)
+
+    def test_appimage_install_refuses_sha256_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            source = tmp / "Cool.AppImage"
+            source.write_bytes(b"appimage payload")
+
+            result = run_mpm_pkg_failure(
+                {"XDG_DATA_HOME": str(tmp / "xdg"), "MPM_DISTROBOX_BRIDGE": str(tmp / "missing-bridge")},
+                "install",
+                str(source),
+                "--backend",
+                "appimage",
+                "--sha256",
+                "0" * 64,
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("sha256 mismatch", result.stderr)
 
     def test_flatpak_uninstall_dry_run_preserves_user_data(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -36,7 +36,7 @@ Por tanto, cada operación debe mostrar:
 
 ---
 
-## Estado actual — 0.14-mvp + hardening
+## Estado actual — 0.15 seguridad operacional
 
 Fork autónomo de Malik Store con CLI, GUI, catálogo y búsqueda federada.
 
@@ -44,7 +44,7 @@ Fork autónomo de Malik Store con CLI, GUI, catálogo y búsqueda federada.
 
 - ✅ CLI `mpm-pkg`: `detect`, `explain`, `install`, `uninstall`, `history`, `doctor`, `repair-app`, `repair-kde`
 - ✅ GUI PySide6 construible con `QT_QPA_PLATFORM=offscreen`
-- ✅ Tests locales: `116` tests pasando
+- ✅ Tests locales: `126` tests pasando
 - ✅ Catálogo curado: 9 apps
 - ✅ Vendor index válido con rutas Cursor AppImage/DEB/RPM
 - ✅ Búsqueda federada: curated, vendor, Flatpak, pacman, AUR, APT, DNF
@@ -52,13 +52,22 @@ Fork autónomo de Malik Store con CLI, GUI, catálogo y búsqueda federada.
 - ✅ Config XDG: catálogo y vendor index se buscan en `XDG_CONFIG_HOME`
 - ✅ `mpm-open` ya busca `mpm-pkg` por `MPM_PKG_BIN`, `PATH`, `~/.local/bin`, `/usr/bin`
 - ✅ Rutas `distrobox-apt` y `distrobox-dnf` marcadas como discovery-only desde GUI
+- ✅ AUR requiere revisión por defecto: `paru` no usa `--skipreview` salvo `--aur-skip-review`
+- ✅ `yay` ya no auto-responde prompts de clean/diff/edit por defecto
+- ✅ `pacman`/AUR tienen preflight host legible con mutación host, sudo, snapshot y advertencias
+- ✅ Host install real exige `--yes` tras preflight; GUI lo añade solo tras confirmación
+- ✅ Snapper es opcional de forma explícita con `--no-snapshot` o preferencia `pacman_snapshots: false`
+- ✅ Operaciones host validan `sudo -n -v` para evitar prompts invisibles en GUI
+- ✅ AppImage/vendor verifica `sha256` cuando existe y alerta si falta
+- ✅ AppImage genera `Exec=` con quoting XDG e `Icon=` cuando hay dato disponible
+- ✅ Instalaciones registran manifiesto interno en SQLite
 
 ### Limitaciones actuales
 
-- ⚠️ `pacman` y `aur` siguen bloqueados sin Snapper root configurado
-- ⚠️ AUR aún usa flags no interactivos que saltan revisión
-- ⚠️ `pacman` usa `--noconfirm` sin preflight rico
-- ⚠️ AppImage/vendor descarga sin verificación SHA256 obligatoria
+- ⚠️ `pacman` y `aur` cancelan por defecto sin Snapper root configurado; continuar requiere `--no-snapshot` o preferencia explícita
+- ⚠️ Preflight de conflictos/reemplazos/tamaño depende de lo que el gestor pueda reportar sin mutar el host
+- ⚠️ `pacman`/AUR aún ejecutan el gestor final con `--noconfirm` después de la confirmación MPM
+- ⚠️ AppImage/vendor solo puede verificar artefactos con `sha256` disponible en índice o CLI
 - ⚠️ Distrobox no es sandbox de seguridad, solo separa gestores de paquetes
 - ⚠️ Desinstalación Distrobox depende demasiado de `app_id`
 - ⚠️ `.desktop` del handler de paquetes aún asume terminal/flujo KDE en parte de la integración
@@ -93,7 +102,9 @@ Backends nativos `apt-host`, `dnf-host` o `zypper-host` quedan fuera de 1.0 salv
 
 **Meta:** antes de automatizar más, MPM debe dejar claro qué va a tocar y reducir los riesgos de host.
 
-### 0.15.1 — AUR review required
+Estado: ✅ completado en la rama actual.
+
+### 0.15.1 — AUR review required ✅
 
 - Eliminar `--skipreview` por defecto en `paru`
 - Eliminar respuestas automáticas peligrosas en `yay`
@@ -108,7 +119,7 @@ mpm-pkg install paquete-aur --backend aur --aur-skip-review
   - el PKGBUILD debe revisarse
   - la operación modifica el host
 
-### 0.15.2 — Preflight host real
+### 0.15.2 — Preflight host real ✅
 
 Antes de `pacman`/AUR:
 
@@ -120,7 +131,7 @@ Antes de `pacman`/AUR:
 
 No basta con `--dry-run` textual: la GUI debe presentar una confirmación legible.
 
-### 0.15.3 — Snapper opcional pero explícito
+### 0.15.3 — Snapper opcional pero explícito ✅
 
 - Reemplazar fallo duro de `ensure_snapper_root_ready`
 - Añadir `--no-snapshot`
@@ -137,7 +148,7 @@ No basta con `--dry-run` textual: la GUI debe presentar una confirmación legibl
   - permitir continuar solo con confirmación explícita
   - registrar en historial que no hubo snapshot
 
-### 0.15.4 — Estrategia sudo/terminal
+### 0.15.4 — Estrategia sudo/terminal ✅
 
 La GUI no debe confiar en `sudo` dentro de `QProcess` para operaciones host.
 
@@ -147,14 +158,14 @@ Opciones aceptables:
 - usar `pkexec`/polkit si se implementa bien
 - ejecutar preflight `sudo -v` y fallar con mensaje claro
 
-### 0.15.5 — AppImage/vendor seguro
+### 0.15.5 — AppImage/vendor seguro ✅
 
 - Usar `sha256` del vendor index cuando exista
 - Si falta `sha256`, mostrar alerta clara antes de instalar
 - Corregir `Exec=` en `.desktop` generado con quoting XDG robusto
 - Añadir `Icon=` cuando sea posible
 
-### 0.15.6 — Manifiesto post-install
+### 0.15.6 — Manifiesto post-install ✅
 
 Cada instalación debe producir un manifiesto interno con:
 

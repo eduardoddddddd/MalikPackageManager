@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 
-VERSION = "mpm 0.14-mvp"
+VERSION = "mpm 0.15"
 
 
 def add_source_path() -> None:

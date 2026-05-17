@@ -54,7 +54,7 @@ from .workflow import (
 )
 
 
-VERSION = "mpm 0.14-mvp"
+VERSION = "mpm 0.15"
 BACKENDS = (
     ("Auto", ""),
     ("pacman", "pacman"),
@@ -167,6 +167,7 @@ class MPMWindow(QMainWindow):
         self.current_started_at: datetime | None = None
         self.last_install_target = ""
         self.last_install_app_id = ""
+        self.pending_install_metadata: dict[str, str] = {}
         self.catalog_entries, self.catalog_path, self.catalog_error = load_catalog_entries()
         self.catalog_providers = default_catalog_providers()
         self.catalog_search_result: SearchResultSet | None = None
@@ -230,6 +231,8 @@ class MPMWindow(QMainWindow):
         self.app_id_edit.setPlaceholderText("Optional app id")
         self.auto_doctor_check = QCheckBox("Doctor after install")
         self.auto_doctor_check.setChecked(True)
+        self.allow_no_snapshot_check = QCheckBox("Allow host install without snapshot")
+        self.allow_no_snapshot_check.setChecked(False)
         self.doctor_target_edit = QLineEdit()
         self.doctor_target_edit.setPlaceholderText("Installed app name or desktop id")
 
@@ -371,6 +374,7 @@ class MPMWindow(QMainWindow):
         form.addRow("Backend", self.backend_combo)
         form.addRow("App ID", self.app_id_edit)
         form.addRow("", self.auto_doctor_check)
+        form.addRow("", self.allow_no_snapshot_check)
 
         action_row = QHBoxLayout()
         detect_button = self.make_button("Detect", QStyle.StandardPixmap.SP_FileDialogInfoView)
@@ -751,6 +755,11 @@ class MPMWindow(QMainWindow):
         backend = route.install_backend or route.backend
         self.target_edit.setText(route.install_target)
         self.app_id_edit.setText(route.install_app_id or route.app_id)
+        self.pending_install_metadata = {
+            "target": route.install_target,
+            "sha256": str(route.raw.get("sha256", "") or route.raw.get("checksum", "") or ""),
+            "icon": str(route.raw.get("icon", "") or route.install_app_id or route.app_id or ""),
+        }
         index = self.backend_combo.findData(backend)
         self.backend_combo.setCurrentIndex(index if index >= 0 else 0)
         self.append_log(f"\nCatalog route: {route.display_name or route.install_target} [{backend or 'auto'}]\n")
@@ -776,10 +785,10 @@ class MPMWindow(QMainWindow):
                 QMessageBox.information(
                     self,
                     "Discovery only",
-                    f"{backend} routes are searchable in 0.14, but install support is not implemented yet.",
+                    f"{backend} routes are searchable in 0.15, but install support is not implemented yet.",
                 )
                 self.append_log(
-                    f"\nCatalog route skipped: {backend} is discovery-only in 0.14.\n"
+                    f"\nCatalog route skipped: {backend} is discovery-only in 0.15.\n"
                 )
                 return
             self.apply_catalog_route(route)
@@ -804,6 +813,7 @@ class MPMWindow(QMainWindow):
 
     def apply_dropped_target(self, target: str, *, run_detect: bool = True) -> None:
         self.target_edit.setText(target)
+        self.pending_install_metadata = {}
         self.append_log(f"\nDropped target: {target}\n")
         if run_detect and self.mpm_pkg_path and not self.command_running():
             self.run_mpm_pkg(["detect", target], "detect")
@@ -841,6 +851,15 @@ class MPMWindow(QMainWindow):
             args.extend(["--backend", backend])
         if app_id:
             args.extend(["--app-id", app_id])
+        if backend in {"pacman", "aur"} and self.allow_no_snapshot_check.isChecked():
+            args.append("--no-snapshot")
+        if self.pending_install_metadata.get("target") == target:
+            sha256 = self.pending_install_metadata.get("sha256", "")
+            icon = self.pending_install_metadata.get("icon", "")
+            if sha256:
+                args.extend(["--sha256", sha256])
+            if icon and backend == "appimage":
+                args.extend(["--icon", icon])
         return args
 
     def install_preflight_args(self, target: str, backend: str, app_id: str) -> list[str]:
@@ -914,7 +933,10 @@ class MPMWindow(QMainWindow):
         if dialog.exec() == QMessageBox.StandardButton.Yes:
             self.last_install_target = target
             self.last_install_app_id = app_id
-            self.run_mpm_pkg(install_args, "install", self.after_install)
+            confirmed_args = list(install_args)
+            if backend in {"pacman", "aur"} and "--yes" not in confirmed_args:
+                confirmed_args.append("--yes")
+            self.run_mpm_pkg(confirmed_args, "install", self.after_install)
             return
 
         self.append_log("\nInstall cancelled after preflight.\n")
