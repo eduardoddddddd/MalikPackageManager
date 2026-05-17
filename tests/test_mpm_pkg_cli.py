@@ -171,14 +171,20 @@ class MalikpkgCliTests(unittest.TestCase):
         self.assertIn("backend: distrobox-deb", output)
         self.assertIn(f"{bridge} install-deb", output)
 
-    def test_pacman_dry_run_creates_snapshot_before_host_install(self) -> None:
+    def test_pacman_dry_run_prints_host_preflight_plan(self) -> None:
         output = run_mpm_pkg("install", "--dry-run", "btop", "--backend", "pacman")
 
-        snapshot_index = output.index("sudo snapper -c root create")
-        pacman_index = output.index("sudo pacman -S --needed --noconfirm btop")
+        self.assertIn("host-preflight:", output)
+        self.assertIn("backend: pacman", output)
+        self.assertIn("host-mutation: yes", output)
+        self.assertIn("package-request: btop", output)
+        self.assertIn("expected snapshot description: pre-mpm-pkg-pacman: btop", output)
+        self.assertIn("This operation modifies the real host package database.", output)
+        snapshot_index = output.index("+ sudo snapper -c root create")
+        pacman_index = output.index("+ sudo pacman -S --needed --noconfirm btop")
         self.assertLess(snapshot_index, pacman_index)
 
-    def test_aur_dry_run_uses_noninteractive_helper_flags(self) -> None:
+    def test_aur_paru_dry_run_requires_review_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             fake_bin = tmp / "bin"
@@ -186,7 +192,7 @@ class MalikpkgCliTests(unittest.TestCase):
             write_executable(fake_bin / "paru", "#!/bin/sh\nexit 0\n")
 
             output = run_mpm_pkg_env(
-                {"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+                {"PATH": str(fake_bin)},
                 "install",
                 "--dry-run",
                 "coolapp",
@@ -195,7 +201,51 @@ class MalikpkgCliTests(unittest.TestCase):
             )
 
         self.assertIn("sudo snapper -c root create", output)
+        self.assertIn("host-preflight:", output)
+        self.assertIn("backend: aur", output)
+        self.assertIn("AUR packages are community supplied; review the PKGBUILD", output)
+        self.assertIn("paru -S --needed --noconfirm coolapp", output)
+        self.assertNotIn("--skipreview", output)
+
+    def test_aur_paru_dry_run_allows_explicit_skip_review_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            fake_bin = tmp / "bin"
+            fake_bin.mkdir()
+            write_executable(fake_bin / "paru", "#!/bin/sh\nexit 0\n")
+
+            output = run_mpm_pkg_env(
+                {"PATH": str(fake_bin)},
+                "install",
+                "--dry-run",
+                "coolapp",
+                "--backend",
+                "aur",
+                "--aur-skip-review",
+            )
+
         self.assertIn("paru -S --needed --noconfirm --skipreview coolapp", output)
+
+    def test_aur_yay_dry_run_does_not_auto_answer_review_prompts_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            fake_bin = tmp / "bin"
+            fake_bin.mkdir()
+            write_executable(fake_bin / "yay", "#!/bin/sh\nexit 0\n")
+
+            output = run_mpm_pkg_env(
+                {"PATH": str(fake_bin)},
+                "install",
+                "--dry-run",
+                "coolapp",
+                "--backend",
+                "aur",
+            )
+
+        self.assertIn("yay -S --needed --noconfirm coolapp", output)
+        self.assertNotIn("--answerclean", output)
+        self.assertNotIn("--answerdiff", output)
+        self.assertNotIn("--answeredit", output)
 
     def test_flatpak_uninstall_dry_run_preserves_user_data(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -843,6 +843,12 @@ class MPMWindow(QMainWindow):
             args.extend(["--app-id", app_id])
         return args
 
+    def install_preflight_args(self, target: str, backend: str, app_id: str) -> list[str]:
+        args = self.install_args(target, backend, app_id)
+        if backend in {"pacman", "aur"}:
+            args.append("--dry-run")
+        return args
+
     def selected_install_record_id(self) -> str | None:
         row = self.installed_table.currentRow()
         if row < 0:
@@ -874,8 +880,9 @@ class MPMWindow(QMainWindow):
         args = self.install_args(target, backend, app_id)
         self.last_install_target = target
         self.last_install_app_id = app_id
+        preflight_args = self.install_preflight_args(target, backend, app_id)
         self.run_mpm_pkg(
-            self.explain_args(target, backend),
+            preflight_args if preflight_args != args else self.explain_args(target, backend),
             "install-preflight",
             lambda output: self.confirm_install_after_preflight(target, backend, app_id, args, output),
         )

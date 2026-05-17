@@ -117,6 +117,8 @@ def format_preflight_confirmation(
     source = explained.get("source", "unknown")
     kind = explained.get("kind", "unknown")
     reason = explained.get("reason", "No policy reason returned.")
+    host_mutation = explained.get("host-mutation", "no")
+    snapshot_status = explained.get("snapshot-status", "")
     lines = [
         f"Target: {target}",
         f"Backend: {resolved_backend}",
@@ -131,6 +133,18 @@ def format_preflight_confirmation(
             [
                 "",
                 "Host-level backend selected. MPM will only continue after this explicit confirmation.",
+                "This operation modifies the real host package database and may require sudo.",
+            ]
+        )
+        if snapshot_status:
+            lines.append(f"Snapshot: {snapshot_status}")
+        elif host_mutation == "yes":
+            lines.append("Snapshot: unknown; review the dry-run plan before continuing.")
+    if resolved_backend == "aur":
+        lines.extend(
+            [
+                "AUR packages are community supplied.",
+                "Review the PKGBUILD and install scripts before accepting the helper prompts.",
             ]
         )
     return "\n".join(lines)

@@ -96,6 +96,29 @@ class WorkflowHelperTests(unittest.TestCase):
 
         self.assertIn("Backend: pacman", text)
         self.assertIn("Host-level backend selected", text)
+        self.assertIn("modifies the real host package database", text)
+
+    def test_format_preflight_confirmation_warns_for_aur_review(self) -> None:
+        text = format_preflight_confirmation(
+            "coolapp",
+            "aur",
+            "\n".join(
+                [
+                    "host-preflight:",
+                    "target: coolapp",
+                    "source: name",
+                    "kind: name",
+                    "backend: aur",
+                    "host-mutation: yes",
+                    "snapshot-status: planned: Snapper root snapshot will be created before host mutation",
+                ]
+            ),
+            "mpm-pkg install coolapp --backend aur",
+        )
+
+        self.assertIn("Backend: aur", text)
+        self.assertIn("Snapshot: planned: Snapper root snapshot", text)
+        self.assertIn("Review the PKGBUILD", text)
 
     def test_format_catalog_detail_keeps_delegation_text(self) -> None:
         text = format_catalog_detail(

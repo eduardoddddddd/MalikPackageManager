@@ -382,9 +382,21 @@ def ensure_snapper_root_ready(*, dry_run: bool = False) -> None:
         raise SystemExit("Host package install requires Snapper root config at /etc/snapper/configs/root.")
 
 
+def snapper_root_status() -> str:
+    if not shutil.which("snapper"):
+        return "absent: snapper command not found"
+    if not Path("/etc/snapper/configs/root").exists():
+        return "absent: /etc/snapper/configs/root not found"
+    return "planned: Snapper root snapshot will be created before host mutation"
+
+
+def host_install_snapshot_description(target: str, backend: str) -> str:
+    return f"pre-mpm-pkg-{backend}: {target}"
+
+
 def create_pre_host_snapshot(target: str, backend: str, *, dry_run: bool = False) -> None:
     ensure_snapper_root_ready(dry_run=dry_run)
-    description = f"pre-mpm-pkg-{backend}: {target}"
+    description = host_install_snapshot_description(target, backend)
     run(
         [
             "sudo",
@@ -401,9 +413,40 @@ def create_pre_host_snapshot(target: str, backend: str, *, dry_run: bool = False
     )
 
 
+def format_host_install_preflight(target: str, backend: str, manager: str, command: list[str]) -> str:
+    snapshot_description = host_install_snapshot_description(target, backend)
+    lines = [
+        "host-preflight:",
+        f"target: {target}",
+        f"backend: {backend}",
+        f"manager: {manager}",
+        "host-mutation: yes",
+        "sudo-required: yes",
+        f"package-request: {target}",
+        "packages: manager will resolve dependencies during the transaction",
+        "conflicts-replacements: review the package manager output before accepting",
+        f"snapshot-status: {snapper_root_status()}",
+        f"expected snapshot description: {snapshot_description}",
+        "commands:",
+        "  - " + shlex.join([str(arg) for arg in command]),
+        "warnings:",
+        "  - This operation modifies the real host package database.",
+    ]
+    if backend == "aur":
+        lines.extend(
+            [
+                "  - AUR packages are community supplied; review the PKGBUILD and install scripts.",
+                "  - MPM does not skip AUR review by default; --aur-skip-review is an explicit advanced override.",
+            ]
+        )
+    return "\n".join(lines)
+
+
 def install_pacman(target: str, *, dry_run: bool) -> None:
+    command = ["sudo", "pacman", "-S", "--needed", "--noconfirm", target]
+    print(format_host_install_preflight(target, "pacman", "pacman", command))
     create_pre_host_snapshot(target, "pacman", dry_run=dry_run)
-    run(["sudo", "pacman", "-S", "--needed", "--noconfirm", target], dry_run=dry_run)
+    run(command, dry_run=dry_run)
 
 
 def aur_helper() -> str:
@@ -414,20 +457,23 @@ def aur_helper() -> str:
     raise SystemExit("AUR backend requested, but neither paru nor yay is installed.")
 
 
-def aur_install_args(helper: str, target: str) -> list[str]:
+def aur_install_args(helper: str, target: str, *, skip_review: bool = False) -> list[str]:
     args = [helper, "-S", "--needed", "--noconfirm"]
     helper_name = Path(helper).name
-    if helper_name == "paru":
+    if helper_name == "paru" and skip_review:
         args.append("--skipreview")
-    elif helper_name == "yay":
+    elif helper_name == "yay" and skip_review:
         args.extend(["--answerclean", "None", "--answerdiff", "None", "--answeredit", "None"])
     args.append(target)
     return args
 
 
-def install_aur(target: str, *, dry_run: bool) -> None:
+def install_aur(target: str, *, dry_run: bool, skip_review: bool = False) -> None:
+    helper = aur_helper()
+    command = aur_install_args(helper, target, skip_review=skip_review)
+    print(format_host_install_preflight(target, "aur", Path(helper).name, command))
     create_pre_host_snapshot(target, "aur", dry_run=dry_run)
-    run(aur_install_args(aur_helper(), target), dry_run=dry_run)
+    run(command, dry_run=dry_run)
 
 
 def install_flatpak(target: str, *, dry_run: bool) -> None:
@@ -1558,7 +1604,7 @@ def install_target(args: argparse.Namespace) -> None:
     if backend == "pacman":
         install_pacman(target, dry_run=args.dry_run)
     elif backend == "aur":
-        install_aur(target, dry_run=args.dry_run)
+        install_aur(target, dry_run=args.dry_run, skip_review=args.aur_skip_review)
     elif backend == "flatpak":
         install_flatpak(target, dry_run=args.dry_run)
     elif backend in {"distrobox-deb", "distrobox-rpm"}:
@@ -1719,6 +1765,11 @@ def build_parser() -> argparse.ArgumentParser:
     install_parser.add_argument("--backend", choices=sorted(BACKENDS))
     install_parser.add_argument("--app-id", help="desktop app id to export/register when needed")
     install_parser.add_argument("--dry-run", action="store_true")
+    install_parser.add_argument(
+        "--aur-skip-review",
+        action="store_true",
+        help="advanced AUR override: skip helper review prompts after explicitly accepting PKGBUILD risk",
+    )
 
     subparsers.add_parser("list-installed", help="list installs recorded by mpm-pkg")
     subparsers.add_parser("list-uninstalls", help="list uninstall history recorded by mpm-pkg")
