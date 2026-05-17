@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -35,6 +36,11 @@ from mpm.catalog_providers import (  # noqa: E402
 
 
 FIXTURES = ROOT / "tests" / "fixtures"
+
+
+def fake_host(family: str = "arch", commands: dict[str, str | None] | None = None) -> SimpleNamespace:
+    commands = commands or {"pacman": "/usr/bin/pacman", "yay": "/usr/bin/yay", "paru": None}
+    return SimpleNamespace(is_arch_like=family == "arch", family=family, commands=commands)
 
 
 class CatalogProviderParserTests(unittest.TestCase):
@@ -479,7 +485,8 @@ class CatalogProviderTests(unittest.TestCase):
     def test_pacman_provider_degrades_when_command_is_missing(self) -> None:
         provider = PacmanProvider(command="definitely-missing-pacman")
 
-        routes = provider.search("btop")
+        with mock.patch("mpm.catalog_providers.detect_host", return_value=fake_host()):
+            routes = provider.search("btop")
 
         self.assertEqual(routes, [])
         self.assertEqual(provider.last_status.state, "warning")
@@ -495,7 +502,9 @@ class CatalogProviderTests(unittest.TestCase):
             )
 
         provider = PacmanProvider(runner=runner)
-        with mock.patch("shutil.which", return_value="/usr/bin/pacman"):
+        with mock.patch("mpm.catalog_providers.detect_host", return_value=fake_host()), mock.patch(
+            "shutil.which", return_value="/usr/bin/pacman"
+        ):
             routes = provider.search("btop")
 
         self.assertEqual(len(routes), 1)
@@ -526,7 +535,9 @@ class CatalogProviderTests(unittest.TestCase):
             )
 
         provider = PacmanProvider(runner=runner)
-        with mock.patch("shutil.which", return_value="/usr/bin/pacman"):
+        with mock.patch("mpm.catalog_providers.detect_host", return_value=fake_host()), mock.patch(
+            "shutil.which", return_value="/usr/bin/pacman"
+        ):
             routes = provider.search("btop")
 
         self.assertEqual(calls[0], ["pacman", "-Ss", "btop"])
@@ -543,7 +554,8 @@ class CatalogProviderTests(unittest.TestCase):
             return payload
 
         provider = AurProvider(fetcher=fetcher)
-        routes = provider.search("cursor", timeout=1.0)
+        with mock.patch("mpm.catalog_providers.detect_host", return_value=fake_host()):
+            routes = provider.search("cursor", timeout=1.0)
 
         self.assertEqual(len(routes), 2)
         self.assertIn("/cursor?", urls[0])
@@ -571,7 +583,8 @@ class CatalogProviderTests(unittest.TestCase):
             raise OSError("network unreachable")
 
         provider = AurProvider(fetcher=fetcher)
-        routes = provider.search("cursor")
+        with mock.patch("mpm.catalog_providers.detect_host", return_value=fake_host()):
+            routes = provider.search("cursor")
 
         self.assertEqual(routes, [])
         self.assertEqual(provider.last_status.state, "warning")

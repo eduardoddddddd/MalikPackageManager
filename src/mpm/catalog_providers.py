@@ -14,6 +14,7 @@ from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from .catalog import load_catalog_entries, repo_root
+from .host import detect_host
 
 
 try:
@@ -1539,14 +1540,21 @@ class PacmanProvider:
         self.last_status = ProviderStatus(provider=self.provider_id, state="idle", message="not searched")
 
     def is_available(self) -> bool:
-        return shutil.which(self.command) is not None
+        info = detect_host()
+        return info.is_arch_like and bool(info.commands.get("pacman")) and shutil.which(self.command) is not None
 
     def search(self, query: str, limit: int = 20, timeout: float | None = 3.0) -> list[CatalogRoute]:
         if not self.is_available():
+            info = detect_host()
+            message = (
+                f"pacman is Arch-only; host family is {info.family}"
+                if not info.is_arch_like
+                else "pacman command not found"
+            )
             self.last_status = ProviderStatus(
                 provider=self.provider_id,
                 state="warning",
-                message="pacman command not found",
+                message=message,
                 result_count=0,
             )
             return []
@@ -1641,7 +1649,8 @@ class AurProvider:
         self.last_status = ProviderStatus(provider=self.provider_id, state="idle", message="not searched")
 
     def is_available(self) -> bool:
-        return True
+        info = detect_host()
+        return info.is_arch_like and bool(info.commands.get("yay") or info.commands.get("paru"))
 
     def _search_url(self, query: str) -> str:
         encoded_query = quote(query, safe="")
@@ -1655,6 +1664,21 @@ class AurProvider:
                 provider=self.provider_id,
                 state="ok",
                 message="empty query skipped",
+                result_count=0,
+            )
+            return []
+        if not self.is_available():
+            info = detect_host()
+            message = (
+                f"AUR is Arch-only; host family is {info.family}"
+                if not info.is_arch_like
+                else "AUR helper not found; install yay or paru to enable AUR routes"
+            )
+            self.last_status = ProviderStatus(
+                provider=self.provider_id,
+                state="warning",
+                message=message,
+                duration_ms=int((time.monotonic() - started) * 1000),
                 result_count=0,
             )
             return []

@@ -1,6 +1,6 @@
 # MPM — Malik Package Manager
 
-Versión **0.15 seguridad operacional** · Host primario Arch Linux · Python 3 + PySide6
+Versión **0.16 portabilidad de host base** · Host primario Arch Linux · Python 3 + PySide6
 
 Gestor de aplicaciones unificado para Arch Linux. Instala y gestiona apps a través de múltiples backends — Flatpak, pacman, AUR, AppImage y paquetes DEB/RPM en contenedores Distrobox — bajo una política consistente y con registro completo de historial.
 
@@ -55,6 +55,8 @@ Distrobox mantiene DEB/RPM fuera del gestor Arch, pero **no es un sandbox de seg
 
 > AUR sigue siendo comunitario. MPM no usa `paru --skipreview` por defecto ni auto-responde prompts peligrosos de `yay`; `--aur-skip-review` es un override avanzado explícito.
 
+> En hosts no-Arch, `pacman` y AUR se bloquean con un mensaje claro. Flatpak, AppImage y Distrobox siguen siendo rutas portables; Distrobox se considera disponible si existen `podman` y `distrobox`.
+
 ---
 
 ## Estado actual de portabilidad
@@ -68,8 +70,8 @@ Distrobox mantiene DEB/RPM fuera del gestor Arch, pero **no es un sandbox de seg
 | `pacman` backend | ✅ Preflight host, confirmación `--yes`, Snapper explícito |
 | `distrobox-deb/rpm` | ⚠️ Requiere contenedores creados; se endurece en 0.18 |
 | `distrobox-apt/dnf` | ⚠️ Búsqueda solamente; instalación no implementada |
-| Integración `.desktop` | ⚠️ Handler externo aún necesita terminal/escritorio agnóstico |
-| Host no-Arch | ⚠️ Flatpak/AppImage/Distrobox pueden ser portables; pacman/AUR son Arch-only |
+| Integración `.desktop` | ✅ Handler externo sin dependencia directa de Konsole; `mpm-open` elige terminal disponible |
+| Host no-Arch | ✅ Flatpak/AppImage/Distrobox degradan como portables; pacman/AUR son Arch-only con error claro |
 
 ---
 
@@ -225,6 +227,10 @@ mpm-pkg uninstall 3 --dry-run
 # Historial completo (JSON lines)
 mpm-pkg history
 
+# Detectar capacidades del host
+mpm-pkg host-info
+mpm-pkg host-info --json
+
 # Diagnosticar un launcher roto
 mpm-pkg doctor org.mozilla.firefox
 mpm-pkg doctor /ruta/app.AppImage
@@ -232,7 +238,10 @@ mpm-pkg doctor /ruta/app.AppImage
 # Reparar un launcher
 mpm-pkg repair-app org.mozilla.firefox
 
-# Refrescar integración KDE desktop/menú
+# Refrescar integración desktop/menú
+mpm-pkg repair-desktop
+
+# Alias legacy compatible
 mpm-pkg repair-kde
 ```
 
@@ -242,7 +251,7 @@ mpm-pkg repair-kde
 mpm-open /ruta/paquete.deb
 ```
 
-El archivo `mpm-package-installer.desktop` registra MPM como handler de `.deb` y `.rpm` — hacer doble clic en Dolphin (o cualquier gestor de archivos con soporte XDG) abre un terminal que explica e instala a través de la política MPM.
+El archivo `mpm-package-installer.desktop` registra MPM como handler de `.deb` y `.rpm`. `mpm-open` detecta `konsole`, `gnome-terminal`, `xfce4-terminal`, `alacritty`, `kitty` o `xterm` cuando necesita abrir una terminal para explicar e instalar a través de la política MPM.
 
 ---
 
@@ -364,7 +373,7 @@ MPM_PKG_BIN="$PWD/bin/mpm-pkg" \
 bin/mpm --self-test
 ```
 
-Los tests usan `unittest`. La suite actual valida 116 tests, JSON de catálogo/vendor, CLI, workflow, providers, búsqueda, advisor local y compilación de módulos.
+Los tests usan `unittest`. La suite valida detección de host, JSON de catálogo/vendor, CLI, workflow, providers, búsqueda, advisor local y compilación de módulos.
 
 ---
 
@@ -395,8 +404,8 @@ El objetivo a medio plazo es que MPM sea distribuible como paquete AUR, pero el 
 
 Orden nuevo:
 
-1. `0.15`: seguridad operacional y honestidad.
-2. `0.16`: portabilidad de host base.
+1. `0.15`: seguridad operacional y honestidad. ✓
+2. `0.16`: portabilidad de host base. ✓
 3. `0.17`: `setup-host --check/--plan/--apply`.
 4. `0.18`: Distrobox robusto.
 5. `0.19`: PKGBUILD/AUR.
@@ -460,7 +469,7 @@ Ver la hoja de ruta completa en [docs/roadmap.md](docs/roadmap.md).
 |---|---|
 | **0.14-mvp + hardening** ✓ | Base funcional, tests, GUI offscreen, vendor index válido |
 | **0.15** ✓ | Seguridad operacional: AUR review, preflight host, Snapper opcional, sudo/terminal, AppImage seguro, manifiestos |
-| **0.16** | Portabilidad base: distro detection, terminal/escritorio agnóstico, rutas estándar |
+| **0.16** ✓ | Portabilidad base: distro detection, terminal/escritorio agnóstico, degradación no-Arch |
 | **0.17** | `setup-host --check/--plan/--apply` seguro |
 | **0.18** | Distrobox robusto: bootstrap multi-distro, manifiestos, uninstall fiable |
 | **0.19** | PKGBUILD + publicación AUR |

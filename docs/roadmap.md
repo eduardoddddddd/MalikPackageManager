@@ -36,15 +36,15 @@ Por tanto, cada operación debe mostrar:
 
 ---
 
-## Estado actual — 0.15 seguridad operacional
+## Estado actual — 0.16 portabilidad de host base
 
 Fork autónomo de Malik Store con CLI, GUI, catálogo y búsqueda federada.
 
 ### Ya validado
 
-- ✅ CLI `mpm-pkg`: `detect`, `explain`, `install`, `uninstall`, `history`, `doctor`, `repair-app`, `repair-kde`
+- ✅ CLI `mpm-pkg`: `host-info`, `detect`, `explain`, `install`, `uninstall`, `history`, `doctor`, `repair-app`, `repair-desktop`, `repair-kde`
 - ✅ GUI PySide6 construible con `QT_QPA_PLATFORM=offscreen`
-- ✅ Tests locales: `126` tests pasando
+- ✅ Tests locales: `134` tests pasando
 - ✅ Catálogo curado: 9 apps
 - ✅ Vendor index válido con rutas Cursor AppImage/DEB/RPM
 - ✅ Búsqueda federada: curated, vendor, Flatpak, pacman, AUR, APT, DNF
@@ -61,6 +61,12 @@ Fork autónomo de Malik Store con CLI, GUI, catálogo y búsqueda federada.
 - ✅ AppImage/vendor verifica `sha256` cuando existe y alerta si falta
 - ✅ AppImage genera `Exec=` con quoting XDG e `Icon=` cuando hay dato disponible
 - ✅ Instalaciones registran manifiesto interno en SQLite
+- ✅ Detección de host basada en `/etc/os-release`, `ID`, `ID_LIKE` y comandos disponibles
+- ✅ `mpm-pkg host-info` con salida humana y `--json`
+- ✅ `pacman`/AUR se limitan a hosts Arch/Arch-like con comandos disponibles
+- ✅ Flatpak/AppImage siguen portables y Distrobox se reporta portable con `podman` + `distrobox`
+- ✅ `mpm-open` ya no depende directamente de Konsole y detecta terminal disponible
+- ✅ `repair-desktop` refresca integración XDG de forma agnóstica; `repair-kde` queda como alias legacy
 
 ### Limitaciones actuales
 
@@ -70,7 +76,7 @@ Fork autónomo de Malik Store con CLI, GUI, catálogo y búsqueda federada.
 - ⚠️ AppImage/vendor solo puede verificar artefactos con `sha256` disponible en índice o CLI
 - ⚠️ Distrobox no es sandbox de seguridad, solo separa gestores de paquetes
 - ⚠️ Desinstalación Distrobox depende demasiado de `app_id`
-- ⚠️ `.desktop` del handler de paquetes aún asume terminal/flujo KDE en parte de la integración
+- ⚠️ `.desktop` del handler de paquetes necesita que exista alguna terminal soportada si el gestor de archivos no provee TTY
 - ⚠️ No existe `setup-host`
 - ⚠️ Sin paquete distribuible
 
@@ -187,14 +193,16 @@ Este manifiesto será la base de uninstall, doctor y reconciliación.
 
 **Meta:** MPM debe detectar el host, degradar bien y eliminar requisitos implícitos KDE/BTRFS/Arch donde no sean estrictos.
 
-### 0.16.1 — Detección de distro
+Estado: ✅ completado en la rama actual para detección, degradación de backends, terminal agnóstico e integración desktop. `setup-host` y bootstrap Distrobox multi-distro quedan fuera de esta fase.
+
+### 0.16.1 — Detección de distro ✅
 
 Nuevo módulo de host detection basado en:
 
 - `/etc/os-release`
 - `ID`
 - `ID_LIKE`
-- comandos disponibles: `pacman`, `dnf`, `apt`, `zypper`, `flatpak`, `distrobox`, `podman`
+- comandos disponibles: `pacman`, `yay`, `paru`, `flatpak`, `distrobox`, `podman`, `apt`, `dnf`, `zypper`, `snapper`
 
 Resultado esperado:
 
@@ -208,14 +216,14 @@ desktop: kde
 terminal: konsole
 ```
 
-### 0.16.2 — Terminal agnóstico
+### 0.16.2 — Terminal agnóstico ✅
 
 - `mpm-open` detecta terminal disponible:
-  `konsole`, `gnome-terminal`, `xfce4-terminal`, `alacritty`, `xterm`
+  `konsole`, `gnome-terminal`, `xfce4-terminal`, `alacritty`, `kitty`, `xterm`
 - `.desktop` elimina dependencia directa de Konsole
 - Añadir `X-MPM-RequiresTerminal=true`
 
-### 0.16.3 — Integración de escritorio agnóstica
+### 0.16.3 — Integración de escritorio agnóstica ✅
 
 - `repair-desktop` sustituye o envuelve `repair-kde`
 - Usar `update-desktop-database` como base
@@ -410,16 +418,16 @@ No debe crear Snapper, instalar AUR ni crear contenedores sin confirmación expl
 
 ### Requisitos para 1.0
 
-- [ ] AUR review required por defecto
-- [ ] Preflight host para pacman/AUR
-- [ ] Snapper opcional con política persistente
-- [ ] Estrategia sudo/terminal resuelta
-- [ ] AppImage/vendor con SHA256 o warning bloqueante/confirmable
-- [ ] Manifiestos post-install
+- [x] AUR review required por defecto
+- [x] Preflight host para pacman/AUR
+- [x] Snapper opcional con política persistente
+- [x] Estrategia sudo/terminal resuelta
+- [x] AppImage/vendor con SHA256 o warning bloqueante/confirmable
+- [x] Manifiestos post-install
 - [ ] Distrobox DEB/RPM con uninstall fiable
 - [ ] `setup-host --check/--plan/--apply`
 - [ ] Bootstrap Distrobox multi-distro
-- [ ] `.desktop` sin dependencia de Konsole
+- [x] `.desktop` sin dependencia de Konsole
 - [ ] PKGBUILD publicado en AUR
 - [ ] CI pasando
 - [ ] Catálogo ampliado a 25 apps curadas

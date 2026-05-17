@@ -15,6 +15,29 @@ import urllib.parse
 from pathlib import Path
 
 
+def add_source_path() -> None:
+    current = Path(__file__).resolve()
+    candidates = [
+        current.parents[1] / "src",
+        Path.home() / ".local/lib/mpm/src",
+        Path("/usr/lib/mpm/src"),
+    ]
+    for candidate in candidates:
+        if (candidate / "mpm").is_dir():
+            sys.path.insert(0, str(candidate))
+            return
+
+
+add_source_path()
+
+from mpm.host import (  # noqa: E402
+    detect_host,
+    ensure_host_backend_available,
+    format_host_info,
+    host_info_json,
+)
+
+
 APP_NAME = "mpm-pkg"
 BACKENDS = {
     "pacman",
@@ -672,6 +695,7 @@ def format_host_install_preflight(
 
 
 def install_pacman(target: str, *, dry_run: bool, no_snapshot: bool = False) -> dict[str, object]:
+    ensure_host_backend_available("pacman")
     command = ["sudo", "pacman", "-S", "--needed", "--noconfirm", target]
     print(format_host_install_preflight(target, "pacman", "pacman", command, no_snapshot=no_snapshot))
     ensure_sudo_ready(dry_run=dry_run)
@@ -712,6 +736,7 @@ def install_aur(
     skip_review: bool = False,
     no_snapshot: bool = False,
 ) -> dict[str, object]:
+    ensure_host_backend_available("aur")
     helper = aur_helper()
     command = aur_install_args(helper, target, skip_review=skip_review)
     manager = Path(helper).name
@@ -782,7 +807,7 @@ def install_appimage(path: Path, *, app_id: str | None, icon: str | None = None,
     if not dry_run:
         desktop_file.write_text(desktop_text, encoding="utf-8")
         run(["chmod", "0644", desktop_file], dry_run=False)
-        repair_kde(dry_run=False)
+        repair_desktop(dry_run=False)
     return {
         "backend": "appimage",
         "manager": "mpm-appimage",
@@ -1476,8 +1501,8 @@ def repair_app(target: str, *, dry_run: bool) -> None:
         repair_url_bridge_in_box(diagnosis.box, dry_run=dry_run)
         actions.append("refreshed Distrobox URL bridge")
 
-    repair_kde(dry_run=dry_run)
-    actions.append("rebuilt KDE desktop cache")
+    repair_desktop(dry_run=dry_run)
+    actions.append("refreshed desktop integration")
 
     if not dry_run:
         for action in actions:
@@ -1488,18 +1513,32 @@ def repair_app(target: str, *, dry_run: bool) -> None:
         print(f"  - {action}")
 
 
-def repair_kde(*, dry_run: bool) -> None:
+def repair_desktop(*, dry_run: bool) -> None:
     script = bridge_script()
     if script.exists():
-        run([script, "repair-kde"], dry_run=dry_run)
+        run([script, "repair-desktop"], dry_run=dry_run)
         return
 
     applications_dir = xdg_data_home() / "applications"
     applications_dir.mkdir(parents=True, exist_ok=True)
+    refreshed = False
     if shutil.which("update-desktop-database"):
         run(["update-desktop-database", applications_dir], dry_run=dry_run)
+        refreshed = True
+    else:
+        print("warning: update-desktop-database not found; desktop MIME cache may refresh later", file=sys.stderr)
     if shutil.which("kbuildsycoca6"):
         run(["kbuildsycoca6", "--noincremental"], dry_run=dry_run)
+        refreshed = True
+    elif shutil.which("kbuildsycoca5"):
+        run(["kbuildsycoca5", "--noincremental"], dry_run=dry_run)
+        refreshed = True
+    if not refreshed:
+        print("warning: no desktop refresh tool found; menu may update on next login", file=sys.stderr)
+
+
+def repair_kde(*, dry_run: bool) -> None:
+    repair_desktop(dry_run=dry_run)
 
 
 def active_install_rows(conn: sqlite3.Connection) -> list[tuple[object, ...]]:
@@ -1765,6 +1804,7 @@ def plan_distrobox_uninstall(record: InstallRecord) -> UninstallPlan:
 
 
 def plan_host_uninstall(record: InstallRecord) -> UninstallPlan:
+    ensure_host_backend_available(record.backend)
     package = record.target
     snapshot_description = f"pre-mpm-pkg-uninstall-{record.backend}: {package}"
     commands = [
@@ -1853,7 +1893,7 @@ def run_uninstall_plan(plan: UninstallPlan, *, dry_run: bool) -> None:
         run(command, dry_run=dry_run)
 
     if record.backend in {"appimage", "distrobox-deb", "distrobox-rpm"}:
-        repair_kde(dry_run=dry_run)
+        repair_desktop(dry_run=dry_run)
 
 
 def uninstall_target(args: argparse.Namespace) -> None:
@@ -1895,6 +1935,8 @@ def install_target(args: argparse.Namespace) -> None:
     print(explain(str(target), args.backend))
 
     manifest: dict[str, object] | None = None
+    if backend in {"pacman", "aur"}:
+        ensure_host_backend_available(backend)
     if backend in {"pacman", "aur"} and not args.dry_run and not args.yes:
         raise SystemExit("host package install requires --yes after reviewing --dry-run preflight output")
 
@@ -2075,8 +2117,11 @@ def print_history() -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=APP_NAME)
-    parser.add_argument("--version", action="version", version="mpm-pkg 0.15")
+    parser.add_argument("--version", action="version", version="mpm-pkg 0.16")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    host_info_parser = subparsers.add_parser("host-info", help="show detected host capabilities")
+    host_info_parser.add_argument("--json", action="store_true", help="print host info as JSON")
 
     detect_parser = subparsers.add_parser("detect", help="detect target type and default backend")
     detect_parser.add_argument("target")
@@ -2120,7 +2165,10 @@ def build_parser() -> argparse.ArgumentParser:
     repair_app_parser.add_argument("target", metavar="APP_OR_DESKTOP_ID")
     repair_app_parser.add_argument("--dry-run", action="store_true")
 
-    repair_parser = subparsers.add_parser("repair-kde", help="refresh KDE desktop/menu integration")
+    repair_desktop_parser = subparsers.add_parser("repair-desktop", help="refresh desktop/menu integration")
+    repair_desktop_parser.add_argument("--dry-run", action="store_true")
+
+    repair_parser = subparsers.add_parser("repair-kde", help="legacy alias for repair-desktop")
     repair_parser.add_argument("--dry-run", action="store_true")
     return parser
 
@@ -2130,7 +2178,10 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        if args.command == "detect":
+        if args.command == "host-info":
+            info = detect_host()
+            print(host_info_json(info) if args.json else format_host_info(info))
+        elif args.command == "detect":
             detected = detect_target(args.target)
             for key in ("source", "kind", "backend"):
                 print(f"{key}: {detected[key]}")
@@ -2150,6 +2201,8 @@ def main() -> int:
             doctor_app(args.target)
         elif args.command == "repair-app":
             repair_app(args.target, dry_run=args.dry_run)
+        elif args.command == "repair-desktop":
+            repair_desktop(dry_run=args.dry_run)
         elif args.command == "repair-kde":
             repair_kde(dry_run=args.dry_run)
         else:

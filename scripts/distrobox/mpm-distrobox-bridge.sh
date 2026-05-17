@@ -19,6 +19,7 @@ Usage:
   $(basename "$0") install-deb FILE [APP_ID]
   $(basename "$0") install-rpm FILE [APP_ID]
   $(basename "$0") export-app BOX APP_ID
+  $(basename "$0") repair-desktop
   $(basename "$0") repair-kde
   $(basename "$0") status
 
@@ -171,7 +172,7 @@ export_app() {
 
   log "Exporting $app_id from $box"
   enter_box "$box" distrobox-export --app "$app_id"
-  repair_kde
+  repair_desktop
 }
 
 export_single_desktop_from_deb_package() {
@@ -321,29 +322,46 @@ install_rpm() {
   fi
 }
 
-repair_kde() {
-  log "Repairing KDE desktop/icon integration"
+repair_desktop() {
+  local refreshed=0
+
+  log "Repairing desktop/icon integration"
   mkdir -p "$DESKTOP_DIR"
 
   if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 || true
+    refreshed=1
+  else
+    warn "update-desktop-database was not found; desktop MIME cache may refresh later"
   fi
 
   if command -v xdg-desktop-menu >/dev/null 2>&1; then
     xdg-desktop-menu forceupdate >/dev/null 2>&1 || true
+    refreshed=1
   fi
 
   if command -v gtk-update-icon-cache >/dev/null 2>&1 && [[ -d "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor" ]]; then
     gtk-update-icon-cache -q -t -f "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor" >/dev/null 2>&1 || true
+    refreshed=1
   fi
 
   if command -v kbuildsycoca6 >/dev/null 2>&1; then
     kbuildsycoca6 --noincremental >/dev/null 2>&1 || true
+    refreshed=1
   elif command -v kbuildsycoca5 >/dev/null 2>&1; then
     kbuildsycoca5 --noincremental >/dev/null 2>&1 || true
+    refreshed=1
   else
     warn "kbuildsycoca was not found; KDE menu may refresh on next login"
   fi
+
+  if [[ "$refreshed" -eq 0 ]]; then
+    warn "no desktop refresh tool was found; menu may update on next login"
+  fi
+}
+
+repair_kde() {
+  repair_desktop
 }
 
 status() {
@@ -378,7 +396,7 @@ status() {
 bootstrap() {
   install_host_packages
   create_boxes
-  repair_kde
+  repair_desktop
   status
 }
 
@@ -402,8 +420,11 @@ case "$cmd" in
     shift
     export_app "$@"
     ;;
+  repair-desktop)
+    repair_desktop
+    ;;
   repair-kde)
-    repair_kde
+    repair_desktop
     ;;
   status)
     status

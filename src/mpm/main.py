@@ -54,7 +54,7 @@ from .workflow import (
 )
 
 
-VERSION = "mpm 0.15"
+VERSION = "mpm 0.16"
 BACKENDS = (
     ("Auto", ""),
     ("pacman", "pacman"),

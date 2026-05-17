@@ -13,6 +13,47 @@ if [[ ! -e "$target" ]]; then
   exit 1
 fi
 
+choose_terminal() {
+  local candidate
+  for candidate in konsole gnome-terminal xfce4-terminal alacritty kitty xterm; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+if [[ ! -t 0 && -z "${MPM_OPEN_IN_TERMINAL:-}" ]]; then
+  terminal="$(choose_terminal || true)"
+  if [[ -z "$terminal" ]]; then
+    printf 'No supported terminal found. Install konsole, gnome-terminal, xfce4-terminal, alacritty, kitty, or xterm.\n' >&2
+    exit 1
+  fi
+
+  export MPM_OPEN_IN_TERMINAL=1
+  case "$terminal" in
+    konsole)
+      exec konsole --hold -e "$0" "$target"
+      ;;
+    gnome-terminal)
+      exec gnome-terminal --wait -- "$0" "$target"
+      ;;
+    xfce4-terminal)
+      exec xfce4-terminal --hold -x "$0" "$target"
+      ;;
+    alacritty)
+      exec alacritty --hold -e "$0" "$target"
+      ;;
+    kitty)
+      exec kitty --hold "$0" "$target"
+      ;;
+    xterm)
+      exec xterm -hold -e "$0" "$target"
+      ;;
+  esac
+fi
+
 if [[ -n "${MPM_PKG_BIN:-}" ]]; then
   mpm_pkg_bin="$MPM_PKG_BIN"
 elif command -v mpm-pkg >/dev/null 2>&1; then
