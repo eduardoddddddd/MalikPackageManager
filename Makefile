@@ -1,4 +1,4 @@
-.PHONY: test validate install install-bin install-config install-desktop uninstall
+.PHONY: test validate install install-bin install-config install-desktop install-system-data uninstall
 
 # ── Test ──────────────────────────────────────────────────────────────────────
 
@@ -22,13 +22,14 @@ validate:
 
 # ── Install ───────────────────────────────────────────────────────────────────
 
-BINDIR   := $(HOME)/.local/bin
-LIBDIR   := $(HOME)/.local/lib/mpm
-SHAREDIR := $(HOME)/.local/share/mpm
+PREFIX  ?= $(HOME)/.local
+BINDIR   := $(DESTDIR)$(PREFIX)/bin
+LIBDIR   := $(DESTDIR)$(PREFIX)/lib/mpm
+SHAREDIR := $(DESTDIR)$(PREFIX)/share/mpm
 CFGDIR   := $(HOME)/.config/mpm
-APPDIR   := $(HOME)/.local/share/applications
+APPDIR   := $(DESTDIR)$(PREFIX)/share/applications
 
-install: install-bin install-config install-desktop
+install: install-bin install-system-data install-config install-desktop
 	@echo "MPM installed. Add $(BINDIR) to PATH if not already there."
 
 install-bin:
@@ -37,9 +38,15 @@ install-bin:
 	install -m 755 bin/mpm-pkg    $(BINDIR)/mpm-pkg
 	install -m 755 bin/mpm-open   $(BINDIR)/mpm-open
 	install -m 755 bin/mpm-host-open-url $(BINDIR)/mpm-host-open-url
-	mkdir -p $(LIBDIR)
-	cp -r src/mpm $(LIBDIR)/src/mpm
+	mkdir -p $(LIBDIR)/src
+	rm -rf $(LIBDIR)/src/mpm
+	cp -R src/mpm $(LIBDIR)/src/mpm
 	install -m 755 scripts/distrobox/mpm-distrobox-bridge.sh $(LIBDIR)/mpm-distrobox-bridge.sh
+
+install-system-data:
+	mkdir -p $(SHAREDIR)
+	install -m 644 configs/mpm/catalog.json      $(SHAREDIR)/catalog.json
+	install -m 644 configs/mpm/vendor_index.json $(SHAREDIR)/vendor_index.json
 
 install-config:
 	mkdir -p $(CFGDIR)
@@ -55,6 +62,8 @@ install-desktop:
 uninstall:
 	rm -f $(BINDIR)/mpm $(BINDIR)/mpm-pkg $(BINDIR)/mpm-open $(BINDIR)/mpm-host-open-url
 	rm -rf $(LIBDIR)
+	rm -f $(SHAREDIR)/catalog.json $(SHAREDIR)/vendor_index.json
+	rmdir $(SHAREDIR) 2>/dev/null || true
 	rm -f $(APPDIR)/mpm.desktop $(APPDIR)/mpm-package-installer.desktop
 	update-desktop-database $(APPDIR) 2>/dev/null || true
 	@echo "MPM uninstalled. Config and data dirs left intact:"

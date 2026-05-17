@@ -147,6 +147,12 @@ cd MalikPackageManager
 make install
 ```
 
+Instalación equivalente sin `make`:
+
+```bash
+./install.sh
+```
+
 Instala en `~/.local/`:
 
 ```
@@ -156,6 +162,8 @@ Instala en `~/.local/`:
 ~/.local/bin/mpm-host-open-url
 ~/.local/lib/mpm/src/mpm/
 ~/.local/lib/mpm/mpm-distrobox-bridge.sh
+~/.local/share/mpm/catalog.json
+~/.local/share/mpm/vendor_index.json
 ~/.local/share/applications/mpm.desktop
 ~/.local/share/applications/mpm-package-installer.desktop
 ~/.config/mpm/catalog.json         (solo si no existe)

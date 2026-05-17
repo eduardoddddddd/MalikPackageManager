@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import py_compile
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -19,6 +20,18 @@ class PythonSyntaxTests(unittest.TestCase):
         for path in paths:
             with self.subTest(path=str(path.relative_to(ROOT))):
                 py_compile.compile(str(path), doraise=True)
+
+    def test_shell_entrypoints_parse(self) -> None:
+        paths = [
+            ROOT / "install.sh",
+            ROOT / "bin" / "mpm-open",
+            ROOT / "bin" / "mpm-host-open-url",
+            ROOT / "scripts" / "distrobox" / "mpm-distrobox-bridge.sh",
+        ]
+
+        for path in paths:
+            with self.subTest(path=str(path.relative_to(ROOT))):
+                subprocess.run(["bash", "-n", str(path)], check=True)
 
 
 if __name__ == "__main__":

@@ -230,7 +230,7 @@ terminal: konsole
 - Ejecutar `kbuildsycoca6/5` solo si existen
 - Mostrar warning si no se puede refrescar menú
 
-### 0.16.4 — Rutas estándar
+### 0.16.4 — Rutas estándar ✅
 
 - `/usr/bin/mpm`
 - `/usr/bin/mpm-pkg`
@@ -241,7 +241,7 @@ terminal: konsole
 - `/usr/share/mpm/catalog.json`
 - `/usr/share/mpm/vendor_index.json`
 
-### 0.16.5 — Instalador local manual
+### 0.16.5 — Instalador local manual ✅
 
 Crear `install.sh` para instalación manual sin `make`, respetando:
 
