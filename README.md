@@ -1,6 +1,6 @@
 # MPM — Malik Package Manager
 
-Versión **0.16 portabilidad de host base** · Host primario Arch Linux · Python 3 + PySide6
+Versión **0.17-dev setup-host seguro** · Host primario Arch Linux · Python 3 + PySide6
 
 Gestor de aplicaciones unificado para Arch Linux. Instala y gestiona apps a través de múltiples backends — Flatpak, pacman, AUR, AppImage y paquetes DEB/RPM en contenedores Distrobox — bajo una política consistente y con registro completo de historial.
 
@@ -48,8 +48,8 @@ Distrobox mantiene DEB/RPM fuera del gestor Arch, pero **no es un sandbox de seg
 | `appimage` | Bundles AppImage de vendor | checksum recomendado |
 | `distrobox-deb` | Archivos `.deb` en contenedor Ubuntu | `distrobox` + caja `mpm-ubuntu-apps` |
 | `distrobox-rpm` | Archivos `.rpm` en contenedor Fedora | `distrobox` + caja `mpm-fedora-apps` |
-| `distrobox-apt` | Búsqueda APT en contenedor Ubuntu | `discovery-only` en 0.15 |
-| `distrobox-dnf` | Búsqueda DNF en contenedor Fedora | `discovery-only` en 0.15 |
+| `distrobox-apt` | Búsqueda APT en contenedor Ubuntu | `discovery-only` |
+| `distrobox-dnf` | Búsqueda DNF en contenedor Fedora | `discovery-only` |
 
 > `pacman`/AUR hacen preflight host, exigen confirmación explícita con `--yes` para instalar de verdad y crean snapshot Snapper si está disponible. Sin Snapper, MPM cancela por defecto; continuar requiere `--no-snapshot` o preferencia explícita `pacman_snapshots: false`.
 
@@ -296,7 +296,7 @@ Cada ruta puede incluir:
 - política de actualización
 - política de desinstalación
 
-Si una ruta vendor no tiene `sha256`, MPM debe avisar antes de instalar. La verificación estricta queda priorizada en 0.15.
+Si una ruta vendor no tiene `sha256`, MPM avisa antes de descargar o instalar. La verificación estricta depende de que el índice o la CLI aporten el hash.
 
 ---
 
@@ -387,10 +387,15 @@ Los tests usan `unittest`. La suite valida detección de host, JSON de catálogo
 
 ## Contenedores Distrobox
 
-Los backends DEB y RPM requieren contenedores Distrobox. El script `scripts/distrobox/mpm-distrobox-bridge.sh` los crea y gestiona:
+Los backends DEB y RPM requieren contenedores Distrobox. Primero revisa el plan seguro del host:
 
 ```bash
-# Bootstrap de los tres contenedores (descarga ~500 MB en total)
+# No modifica el sistema
+mpm-pkg setup-host --check
+mpm-pkg setup-host --plan
+
+# Cuando podman/distrobox ya existen, crea los tres contenedores
+# (descarga ~500 MB en total)
 scripts/distrobox/mpm-distrobox-bridge.sh bootstrap
 ```
 
@@ -402,7 +407,7 @@ mpm-debian-apps   # Debian estable
 mpm-fedora-apps   # Fedora — para .rpm y dnf
 ```
 
-En la versión 0.18 esto se automatizará de forma segura mediante `setup-host --plan/--apply` y bootstrap Distrobox multi-distro.
+`bootstrap` ya no instala paquetes del host. Si faltan `podman` o `distrobox`, se detiene y debes seguir el plan explícito de `setup-host`.
 
 ---
 

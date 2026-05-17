@@ -613,7 +613,7 @@ def parse_aur_rpc_search_response(payload: str) -> list[AurSearchEntry]:
 
 
 def fetch_url_text(url: str, timeout: float | None = 3.0) -> str:
-    request = Request(url, headers={"User-Agent": "mpm/0.15 aur-provider"})
+    request = Request(url, headers={"User-Agent": "mpm/0.17-dev aur-provider"})
     with urlopen(request, timeout=timeout) as response:
         charset = response.headers.get_content_charset() or "utf-8"
         return response.read().decode(charset, errors="replace")
@@ -897,11 +897,11 @@ def _apt_warnings(search_entry: AptSearchEntry, show_entry: AptShowEntry | None)
             show_entry.depends if show_entry else "",
         ]
     ).casefold()
-    warnings: list[str] = ["Package install inside Distrobox is discovery-only in MVP 0.11; install support is pending."]
+    warnings: list[str] = ["Package install inside Distrobox is discovery-only; install support is pending Distrobox hardening."]
     if "transitional" in text or "dummy package" in text:
         warnings.append("APT package appears to be transitional/dummy; verify the real install target.")
     if "snap" in text or "snapd" in text:
-        warnings.append("APT package appears to route to Snap; MalikOS should avoid silent Snap installs.")
+        warnings.append("APT package appears to route to Snap; MPM should avoid silent Snap installs.")
     return warnings
 
 
@@ -1136,7 +1136,7 @@ class DnfProvider(DistroboxRepoProvider):
                     recommendation_score=0.62,
                     badges=["rpm", "dnf", "fedora", "distrobox", "container", self.box_name],
                     warnings=[
-                        "Package install inside Distrobox is discovery-only in MVP 0.11; install support is pending."
+                        "Package install inside Distrobox is discovery-only; install support is pending Distrobox hardening."
                     ],
                     raw={
                         "box": self.box_name,

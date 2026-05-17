@@ -33,6 +33,12 @@ class PythonSyntaxTests(unittest.TestCase):
             with self.subTest(path=str(path.relative_to(ROOT))):
                 subprocess.run(["bash", "-n", str(path)], check=True)
 
+    def test_distrobox_bridge_bootstrap_does_not_install_host_packages(self) -> None:
+        bridge = ROOT / "scripts" / "distrobox" / "mpm-distrobox-bridge.sh"
+        text = bridge.read_text(encoding="utf-8")
+
+        self.assertNotIn("pacman -S --needed --noconfirm", text)
+
 
 if __name__ == "__main__":
     unittest.main()

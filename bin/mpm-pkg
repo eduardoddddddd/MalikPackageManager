@@ -36,6 +36,7 @@ from mpm.host import (  # noqa: E402
     format_host_info,
     host_info_json,
 )
+from mpm.setup_host import build_setup_report, format_setup_check, format_setup_plan  # noqa: E402
 
 
 APP_NAME = "mpm-pkg"
@@ -140,7 +141,7 @@ class UninstallPlan:
     commands: list[list[str]]
     notes: list[str]
     diagnostics: list[str]
-    data_policy: str = "user data is preserved; package-managed files and MalikOS launcher registrations only"
+    data_policy: str = "user data is preserved; package-managed files and MPM launcher registrations only"
 
 
 def xdg_data_home() -> Path:
@@ -462,10 +463,10 @@ def explain(target: str, forced_backend: str | None = None) -> str:
     reasons = {
         "distrobox-deb": "DEB vendor package: install inside the Ubuntu Distrobox app container and keep Arch clean.",
         "distrobox-rpm": "RPM vendor package: install inside the Fedora Distrobox app container and keep Arch clean.",
-        "distrobox-apt": "APT package route: discover inside a Debian/Ubuntu Distrobox app container. Install support is planned after MVP 0.11.",
-        "distrobox-dnf": "DNF package route: discover inside a Fedora Distrobox app container. Install support is planned after MVP 0.11.",
+        "distrobox-apt": "APT package route: discover inside a Debian/Ubuntu Distrobox app container. Install support is planned for the Distrobox hardening phase.",
+        "distrobox-dnf": "DNF package route: discover inside a Fedora Distrobox app container. Install support is planned for the Distrobox hardening phase.",
         "appimage": "AppImage file: register it in the MPM local AppImage area and create desktop integration.",
-        "pacman": "Package name: MVP policy defaults to pacman for host packages unless a backend is forced.",
+        "pacman": "Package name: MPM policy defaults to pacman for host packages unless a backend is forced.",
         "aur": "AUR backend forced: use the configured AUR helper for Arch community packages.",
         "flatpak": "Flatpak backend forced: install through user Flathub/Flatpak for isolated GUI apps.",
         "unknown": "URL without a known package suffix: download is not safe to route automatically yet.",
@@ -783,8 +784,9 @@ def install_flatpak(target: str, *, dry_run: bool) -> dict[str, object]:
 def install_appimage(path: Path, *, app_id: str | None, icon: str | None = None, dry_run: bool) -> dict[str, object]:
     app_dir = xdg_data_home() / "mpm" / "appimages"
     applications_dir = xdg_data_home() / "applications"
-    app_dir.mkdir(parents=True, exist_ok=True)
-    applications_dir.mkdir(parents=True, exist_ok=True)
+    if not dry_run:
+        app_dir.mkdir(parents=True, exist_ok=True)
+        applications_dir.mkdir(parents=True, exist_ok=True)
 
     target = app_dir / path.name
     run(["install", "-m", "0755", path, target], dry_run=dry_run)
@@ -798,7 +800,7 @@ def install_appimage(path: Path, *, app_id: str | None, icon: str | None = None,
         f"Exec={desktop_exec_path(target)}\n"
         "Terminal=false\n"
         "Categories=Utility;\n"
-        f"X-MalikOS-Backend=appimage\n"
+        f"X-MPM-Backend=appimage\n"
     )
     icon_name = icon or app_id
     if icon_name:
@@ -1673,7 +1675,7 @@ def plan_appimage_uninstall(record: InstallRecord) -> UninstallPlan:
         "backend: local AppImage registry",
         f"appimage: {app_binary}",
         f"desktop-entry: {desktop_file}",
-        "removes MalikOS-managed binary copy and launcher only",
+        "removes MPM-managed binary copy and launcher only",
     ]
     diagnostics: list[str] = []
     binary_exists = app_binary.exists()
@@ -1682,12 +1684,12 @@ def plan_appimage_uninstall(record: InstallRecord) -> UninstallPlan:
     desktop_exec_missing = bool(desktop_exec and desktop_exec.startswith("/") and not Path(desktop_exec).exists())
     if not binary_exists and not desktop_exists:
         diagnostics.append(
-            "stale-state: AppImage record exists, but the MalikOS-managed binary and desktop entry are missing"
+            "stale-state: AppImage record exists, but the MPM-managed binary and desktop entry are missing"
         )
     elif not binary_exists:
-        diagnostics.append("stale-state: AppImage desktop entry exists, but the MalikOS-managed binary is missing")
+        diagnostics.append("stale-state: AppImage desktop entry exists, but the MPM-managed binary is missing")
     elif not desktop_exists:
-        diagnostics.append("stale-state: AppImage record exists, but the MalikOS-managed desktop entry is missing")
+        diagnostics.append("stale-state: AppImage record exists, but the MPM-managed desktop entry is missing")
     elif desktop_exec_missing:
         diagnostics.append(f"stale-state: AppImage desktop entry exists, but Exec target is missing: {desktop_exec}")
     else:
@@ -1923,11 +1925,12 @@ def install_target(args: argparse.Namespace) -> None:
     app_id = args.app_id or vendor_metadata.get("app_id") or None
     icon = args.icon or vendor_metadata.get("icon") or app_id
 
+    if not expected_sha256 and source == "url" and backend in {"appimage", "distrobox-deb", "distrobox-rpm"}:
+        print("warning: vendor artifact has no pinned sha256; origin and integrity are not verified by MPM")
+
     actual_target = Path(download_url(target, dry_run=args.dry_run)) if source == "url" else Path(target)
     if expected_sha256:
         verify_sha256(actual_target, expected_sha256, dry_run=args.dry_run)
-    elif source == "url" and backend in {"appimage", "distrobox-deb", "distrobox-rpm"}:
-        print("warning: vendor artifact has no pinned sha256; origin and integrity are not verified by MPM")
 
     if backend in {"distrobox-deb", "distrobox-rpm", "appimage"} and not args.dry_run and not actual_target.exists():
         raise SystemExit(f"file not found: {actual_target}")
@@ -2117,11 +2120,17 @@ def print_history() -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=APP_NAME)
-    parser.add_argument("--version", action="version", version="mpm-pkg 0.16")
+    parser.add_argument("--version", action="version", version="mpm-pkg 0.17-dev")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     host_info_parser = subparsers.add_parser("host-info", help="show detected host capabilities")
     host_info_parser.add_argument("--json", action="store_true", help="print host info as JSON")
+
+    setup_parser = subparsers.add_parser("setup-host", help="check or plan safe host setup")
+    setup_mode = setup_parser.add_mutually_exclusive_group(required=True)
+    setup_mode.add_argument("--check", action="store_true", help="report host readiness without changing anything")
+    setup_mode.add_argument("--plan", action="store_true", help="print recommended setup actions without executing them")
+    setup_mode.add_argument("--apply", action="store_true", help="reserved for explicit future host setup execution")
 
     detect_parser = subparsers.add_parser("detect", help="detect target type and default backend")
     detect_parser.add_argument("target")
@@ -2181,6 +2190,11 @@ def main() -> int:
         if args.command == "host-info":
             info = detect_host()
             print(host_info_json(info) if args.json else format_host_info(info))
+        elif args.command == "setup-host":
+            if args.apply:
+                raise SystemExit("setup-host --apply is not implemented yet; run --check or --plan first.")
+            report = build_setup_report()
+            print(format_setup_plan(report) if args.plan else format_setup_check(report))
         elif args.command == "detect":
             detected = detect_target(args.target)
             for key in ("source", "kind", "backend"):

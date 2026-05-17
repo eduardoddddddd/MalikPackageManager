@@ -14,8 +14,10 @@ from mpm.workflow import (  # noqa: E402
     format_preflight_confirmation,
     format_uninstall_confirmation,
     infer_doctor_target,
+    preflight_requires_host_confirmation,
     parse_history_output,
     parse_doctor_summary,
+    resolved_preflight_backend,
 )
 
 
@@ -97,6 +99,12 @@ class WorkflowHelperTests(unittest.TestCase):
         self.assertIn("Backend: pacman", text)
         self.assertIn("Host-level backend selected", text)
         self.assertIn("modifies the real host package database", text)
+
+    def test_auto_preflight_uses_resolved_backend_for_host_confirmation(self) -> None:
+        output = "source: name\nkind: name\nbackend: pacman\nreason: host package"
+
+        self.assertEqual(resolved_preflight_backend("", output), "pacman")
+        self.assertTrue(preflight_requires_host_confirmation("", output))
 
     def test_format_preflight_confirmation_warns_for_aur_review(self) -> None:
         text = format_preflight_confirmation(

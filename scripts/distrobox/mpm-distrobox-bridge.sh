@@ -50,35 +50,6 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
 }
 
-create_pre_host_snapshot() {
-  local description="$1"
-
-  require_cmd sudo
-  require_cmd snapper
-  [[ -f /etc/snapper/configs/root ]] || die "Snapper root config is required before host package install"
-  sudo snapper -c root create --cleanup-algorithm number --description "$description"
-}
-
-install_host_packages() {
-  require_cmd sudo
-  require_cmd pacman
-
-  log "Installing MalikOS Distrobox bridge host packages"
-  create_pre_host_snapshot "pre-mpm-distrobox-bridge host packages"
-  sudo pacman -S --needed --noconfirm \
-    podman \
-    distrobox \
-    fuse-overlayfs \
-    slirp4netns \
-    xdg-utils \
-    desktop-file-utils
-
-  if command -v systemctl >/dev/null 2>&1; then
-    systemctl --user enable --now podman.socket >/dev/null 2>&1 || \
-      warn "podman.socket user service was not enabled; rootless podman still works without the API socket"
-  fi
-}
-
 container_exists() {
   local name="$1"
   podman container exists "$name" >/dev/null 2>&1
@@ -367,7 +338,7 @@ repair_kde() {
 status() {
   local box
 
-  printf 'MalikOS Distrobox bridge status\n\n'
+  printf 'MPM Distrobox bridge status\n\n'
 
   for cmd in podman distrobox; do
     if command -v "$cmd" >/dev/null 2>&1; then
@@ -394,7 +365,8 @@ status() {
 }
 
 bootstrap() {
-  install_host_packages
+  require_cmd podman
+  require_cmd distrobox
   create_boxes
   repair_desktop
   status

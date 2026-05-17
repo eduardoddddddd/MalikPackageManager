@@ -197,6 +197,10 @@ class MalikpkgCliTests(unittest.TestCase):
         self.assertIn("cool.deb", output)
         self.assertIn("backend: distrobox-deb", output)
         self.assertIn(f"{bridge} install-deb", output)
+        self.assertLess(
+            output.index("warning: vendor artifact has no pinned sha256"),
+            output.index("curl -L --fail -o"),
+        )
 
     def test_pacman_dry_run_prints_host_preflight_plan(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -328,6 +332,67 @@ class MalikpkgCliTests(unittest.TestCase):
         self.assertEqual(payload["desktop"], "gnome")
         self.assertEqual(payload["terminal"], "gnome-terminal")
 
+    def test_setup_host_check_reports_readiness_without_mutating(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            fake_bin = tmp / "bin"
+            fake_bin.mkdir()
+            write_executable(fake_bin / "apt", "#!/bin/sh\nexit 0\n")
+            write_executable(fake_bin / "flatpak", "#!/bin/sh\nprintf 'flathub\\n'\n")
+            write_executable(fake_bin / "podman", "#!/bin/sh\nexit 0\n")
+            write_executable(
+                fake_bin / "distrobox",
+                "\n".join(
+                    [
+                        "#!/bin/sh",
+                        "printf 'ID           | NAME            | STATUS  | IMAGE\\n'",
+                        "printf '123456789abc | mpm-ubuntu-apps | running | ubuntu:24.04\\n'",
+                    ]
+                )
+                + "\n",
+            )
+            write_executable(fake_bin / "kitty", "#!/bin/sh\nexit 0\n")
+            os_release = write_os_release(tmp / "os-release", 'ID=ubuntu\nID_LIKE="debian"\nPRETTY_NAME="Ubuntu Test"\n')
+
+            output = run_mpm_pkg_env(
+                {
+                    "MPM_HOST_OS_RELEASE": str(os_release),
+                    "PATH": str(fake_bin),
+                    "XDG_CURRENT_DESKTOP": "GNOME",
+                },
+                "setup-host",
+                "--check",
+            )
+
+        self.assertIn("setup-host-check:", output)
+        self.assertIn("- distro: ok - Ubuntu Test (debian)", output)
+        self.assertIn("- flatpak: ok -", output)
+        self.assertIn("- flathub: ok - remote configured", output)
+        self.assertIn("- container:mpm-ubuntu-apps: ok - exists", output)
+        self.assertIn("- terminal: ok - kitty", output)
+
+    def test_setup_host_plan_recommends_missing_portable_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            fake_bin = tmp / "bin"
+            fake_bin.mkdir()
+            write_executable(fake_bin / "apt", "#!/bin/sh\nexit 0\n")
+            os_release = write_os_release(tmp / "os-release", "ID=debian\nID_LIKE=debian\n")
+
+            output = run_mpm_pkg_env(
+                {
+                    "MPM_HOST_OS_RELEASE": str(os_release),
+                    "PATH": str(fake_bin),
+                },
+                "setup-host",
+                "--plan",
+            )
+
+        self.assertIn("setup-host-plan:", output)
+        self.assertIn("install flatpak: sudo apt install flatpak", output)
+        self.assertIn("install podman and distrobox: sudo apt install podman distrobox", output)
+        self.assertIn("install terminal:", output)
+
     def test_pacman_blocks_on_non_arch_with_clear_message(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
@@ -450,15 +515,20 @@ class MalikpkgCliTests(unittest.TestCase):
         self.assertNotIn("--answeredit", output)
 
     def test_appimage_url_dry_run_warns_when_sha256_missing(self) -> None:
-        output = run_mpm_pkg(
-            "install",
-            "https://vendor.example/Cool.AppImage",
-            "--backend",
-            "appimage",
-            "--dry-run",
-        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            xdg_data_home = Path(tmpdir) / "xdg"
+            output = run_mpm_pkg_env(
+                {"XDG_DATA_HOME": str(xdg_data_home)},
+                "install",
+                "https://vendor.example/Cool.AppImage",
+                "--backend",
+                "appimage",
+                "--dry-run",
+            )
 
-        self.assertIn("warning: vendor artifact has no pinned sha256", output)
+            self.assertIn("warning: vendor artifact has no pinned sha256", output)
+            self.assertFalse((xdg_data_home / "mpm/appimages").exists())
+            self.assertFalse((xdg_data_home / "applications").exists())
 
     def test_appimage_install_verifies_sha256_quotes_exec_and_records_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -572,8 +642,8 @@ class MalikpkgCliTests(unittest.TestCase):
 
         self.assertIn(f"rm -f '{xdg_data_home}/mpm/appimages/Cool App.AppImage'", output)
         self.assertIn("mpm-appimage-cool-app.desktop", output)
-        self.assertIn("removes MalikOS-managed binary copy and launcher only", output)
-        self.assertIn("stale-state: AppImage record exists, but the MalikOS-managed binary and desktop entry are missing", output)
+        self.assertIn("removes MPM-managed binary copy and launcher only", output)
+        self.assertIn("stale-state: AppImage record exists, but the MPM-managed binary and desktop entry are missing", output)
 
     def test_appimage_uninstall_dry_run_reports_desktop_exec_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

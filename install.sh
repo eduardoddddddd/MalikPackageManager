@@ -32,8 +32,9 @@ if [ ! -e "$CFGDIR/vendor_index.json" ]; then
   install -m 644 "$ROOT_DIR/configs/mpm/vendor_index.json" "$CFGDIR/vendor_index.json"
 fi
 
-install -m 644 "$ROOT_DIR/configs/desktop/mpm.desktop" "$APPDIR/mpm.desktop"
-install -m 644 "$ROOT_DIR/configs/desktop/mpm-package-installer.desktop" "$APPDIR/mpm-package-installer.desktop"
+sed "s|^Exec=mpm\$|Exec=$BINDIR/mpm|" "$ROOT_DIR/configs/desktop/mpm.desktop" > "$APPDIR/mpm.desktop"
+sed "s|^Exec=mpm-open %f\$|Exec=$BINDIR/mpm-open %f|" "$ROOT_DIR/configs/desktop/mpm-package-installer.desktop" > "$APPDIR/mpm-package-installer.desktop"
+chmod 644 "$APPDIR/mpm.desktop" "$APPDIR/mpm-package-installer.desktop"
 
 if command -v update-desktop-database >/dev/null 2>&1; then
   update-desktop-database "$APPDIR" 2>/dev/null || true

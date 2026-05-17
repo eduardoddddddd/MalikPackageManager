@@ -15,6 +15,15 @@ def parse_key_values(output: str) -> dict[str, str]:
     return values
 
 
+def resolved_preflight_backend(selected_backend: str, preflight_output: str) -> str:
+    values = parse_key_values(preflight_output)
+    return values.get("backend") or selected_backend or "auto"
+
+
+def preflight_requires_host_confirmation(selected_backend: str, preflight_output: str) -> bool:
+    return resolved_preflight_backend(selected_backend, preflight_output) in {"pacman", "aur"}
+
+
 def format_catalog_detail(entry: dict[str, str] | None) -> str:
     if not entry:
         return "Select a local catalog app."
@@ -113,7 +122,7 @@ def format_preflight_confirmation(
     install_command: str,
 ) -> str:
     explained = parse_key_values(explain_output)
-    resolved_backend = explained.get("backend") or backend or "auto"
+    resolved_backend = resolved_preflight_backend(backend, explain_output)
     source = explained.get("source", "unknown")
     kind = explained.get("kind", "unknown")
     reason = explained.get("reason", "No policy reason returned.")

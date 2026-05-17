@@ -6,6 +6,7 @@ import json
 import os
 from typing import Any, Mapping
 
+from .host import detect_host
 from .search import AppGroup, CatalogRoute, SearchResultSet, normalize_token
 
 
@@ -106,13 +107,15 @@ def build_advisor_input(result: SearchResultSet, *, max_candidates: int = 30) ->
         if len(route_dicts) >= max_candidates:
             break
 
+    host = detect_host()
+
     return {
         "task": "rank_install_routes",
         "policy_version": POLICY_VERSION,
         "query": result.query,
         "system_context": {
-            "host": "Arch Linux",
-            "desktop": "KDE Plasma",
+            "host": host.family,
+            "desktop": host.desktop,
             "principles": [
                 "Keep host clean",
                 "DEB/RPM install through Distrobox",

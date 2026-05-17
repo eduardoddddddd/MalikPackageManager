@@ -23,11 +23,13 @@ validate:
 # ── Install ───────────────────────────────────────────────────────────────────
 
 PREFIX  ?= $(HOME)/.local
+XDG_CONFIG_HOME ?= $(HOME)/.config
 BINDIR   := $(DESTDIR)$(PREFIX)/bin
 LIBDIR   := $(DESTDIR)$(PREFIX)/lib/mpm
 SHAREDIR := $(DESTDIR)$(PREFIX)/share/mpm
-CFGDIR   := $(HOME)/.config/mpm
+CFGDIR   ?= $(XDG_CONFIG_HOME)/mpm
 APPDIR   := $(DESTDIR)$(PREFIX)/share/applications
+RUNTIME_BINDIR := $(PREFIX)/bin
 
 install: install-bin install-system-data install-config install-desktop
 	@echo "MPM installed. Add $(BINDIR) to PATH if not already there."
@@ -55,8 +57,9 @@ install-config:
 
 install-desktop:
 	mkdir -p $(APPDIR)
-	install -m 644 configs/desktop/mpm.desktop                  $(APPDIR)/mpm.desktop
-	install -m 644 configs/desktop/mpm-package-installer.desktop $(APPDIR)/mpm-package-installer.desktop
+	sed 's|^Exec=mpm$$|Exec=$(RUNTIME_BINDIR)/mpm|' configs/desktop/mpm.desktop > $(APPDIR)/mpm.desktop
+	sed 's|^Exec=mpm-open %f$$|Exec=$(RUNTIME_BINDIR)/mpm-open %f|' configs/desktop/mpm-package-installer.desktop > $(APPDIR)/mpm-package-installer.desktop
+	chmod 644 $(APPDIR)/mpm.desktop $(APPDIR)/mpm-package-installer.desktop
 	update-desktop-database $(APPDIR) 2>/dev/null || true
 
 uninstall:

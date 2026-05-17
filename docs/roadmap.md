@@ -36,7 +36,7 @@ Por tanto, cada operación debe mostrar:
 
 ---
 
-## Estado actual — 0.16 portabilidad de host base
+## Estado actual — 0.17-dev setup-host seguro
 
 Fork autónomo de Malik Store con CLI, GUI, catálogo y búsqueda federada.
 
@@ -77,7 +77,7 @@ Fork autónomo de Malik Store con CLI, GUI, catálogo y búsqueda federada.
 - ⚠️ Distrobox no es sandbox de seguridad, solo separa gestores de paquetes
 - ⚠️ Desinstalación Distrobox depende demasiado de `app_id`
 - ⚠️ `.desktop` del handler de paquetes necesita que exista alguna terminal soportada si el gestor de archivos no provee TTY
-- ⚠️ No existe `setup-host`
+- ⚠️ `setup-host --check/--plan` existe; `--apply` sigue bloqueado hasta cerrar reglas de mutación host
 - ⚠️ Sin paquete distribuible
 
 ---
@@ -256,7 +256,7 @@ Crear `install.sh` para instalación manual sin `make`, respetando:
 
 **Meta:** `mpm-pkg setup-host` informa primero y solo modifica el sistema con confirmación explícita.
 
-### 0.17.1 — `setup-host --check`
+### 0.17.1 — `setup-host --check` ✅
 
 Modo read-only obligatorio:
 
@@ -277,7 +277,7 @@ Debe reportar:
 - terminal disponible
 - backends disponibles/no disponibles
 
-### 0.17.2 — `setup-host --plan`
+### 0.17.2 — `setup-host --plan` ✅
 
 Imprime acciones recomendadas sin ejecutarlas.
 
@@ -290,6 +290,8 @@ create box: mpm-ubuntu-apps
 ```
 
 ### 0.17.3 — `setup-host --apply`
+
+Estado: pendiente. El comando existe pero rechaza ejecución real hasta que las reglas de mutación host estén cerradas y cubiertas por tests.
 
 Ejecuta solo con confirmación explícita.
 
@@ -425,7 +427,7 @@ No debe crear Snapper, instalar AUR ni crear contenedores sin confirmación expl
 - [x] AppImage/vendor con SHA256 o warning bloqueante/confirmable
 - [x] Manifiestos post-install
 - [ ] Distrobox DEB/RPM con uninstall fiable
-- [ ] `setup-host --check/--plan/--apply`
+- [ ] `setup-host --check/--plan/--apply` (`check` y `plan` listos; `apply` pendiente)
 - [ ] Bootstrap Distrobox multi-distro
 - [x] `.desktop` sin dependencia de Konsole
 - [ ] PKGBUILD publicado en AUR

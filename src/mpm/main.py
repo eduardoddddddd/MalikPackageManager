@@ -51,10 +51,11 @@ from .workflow import (
     infer_doctor_target,
     parse_history_output,
     parse_doctor_summary,
+    preflight_requires_host_confirmation,
 )
 
 
-VERSION = "mpm 0.16"
+VERSION = "mpm 0.17-dev"
 BACKENDS = (
     ("Auto", ""),
     ("pacman", "pacman"),
@@ -184,7 +185,7 @@ class MPMWindow(QMainWindow):
         self.catalog_source_checks: dict[str, QCheckBox] = {}
         for source_id, label in [
             ("all", "All"),
-            ("curated", "MalikOS"),
+            ("curated", "MPM"),
             ("vendor", "Vendor"),
             ("flatpak", "Flatpak"),
             ("pacman", "Arch"),
@@ -293,7 +294,7 @@ class MPMWindow(QMainWindow):
             self.statusBar().showMessage(f"Using {self.mpm_pkg_path}")
         else:
             self.statusBar().showMessage("mpm-pkg not found")
-            self.append_log("mpm-pkg was not found. Install MVP 0.4.1 before using MPM.\n")
+            self.append_log("mpm-pkg was not found. Install MPM before using the GUI.\n")
             self.set_command_buttons_enabled(False)
 
     def build_tabs(self) -> QTabWidget:
@@ -559,7 +560,7 @@ class MPMWindow(QMainWindow):
             "aur": "AUR",
             "community": "Community",
             "container": "Container",
-            "curated": "MalikOS",
+            "curated": "MPM",
             "deb": "DEB",
             "distrobox": "Distrobox",
             "dnf": "DNF",
@@ -785,10 +786,10 @@ class MPMWindow(QMainWindow):
                 QMessageBox.information(
                     self,
                     "Discovery only",
-                    f"{backend} routes are searchable in 0.15, but install support is not implemented yet.",
+                    f"{backend} routes are searchable, but install support is not implemented yet.",
                 )
                 self.append_log(
-                    f"\nCatalog route skipped: {backend} is discovery-only in 0.15.\n"
+                    f"\nCatalog route skipped: {backend} is discovery-only.\n"
                 )
                 return
             self.apply_catalog_route(route)
@@ -851,7 +852,7 @@ class MPMWindow(QMainWindow):
             args.extend(["--backend", backend])
         if app_id:
             args.extend(["--app-id", app_id])
-        if backend in {"pacman", "aur"} and self.allow_no_snapshot_check.isChecked():
+        if (backend in {"pacman", "aur"} or not backend) and self.allow_no_snapshot_check.isChecked():
             args.append("--no-snapshot")
         if self.pending_install_metadata.get("target") == target:
             sha256 = self.pending_install_metadata.get("sha256", "")
@@ -864,7 +865,7 @@ class MPMWindow(QMainWindow):
 
     def install_preflight_args(self, target: str, backend: str, app_id: str) -> list[str]:
         args = self.install_args(target, backend, app_id)
-        if backend in {"pacman", "aur"}:
+        if "--dry-run" not in args:
             args.append("--dry-run")
         return args
 
@@ -934,7 +935,7 @@ class MPMWindow(QMainWindow):
             self.last_install_target = target
             self.last_install_app_id = app_id
             confirmed_args = list(install_args)
-            if backend in {"pacman", "aur"} and "--yes" not in confirmed_args:
+            if preflight_requires_host_confirmation(backend, explain_output) and "--yes" not in confirmed_args:
                 confirmed_args.append("--yes")
             self.run_mpm_pkg(confirmed_args, "install", self.after_install)
             return
