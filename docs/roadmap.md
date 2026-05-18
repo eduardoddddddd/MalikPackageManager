@@ -96,7 +96,7 @@ MPM tiene dos niveles:
 | Distrobox DEB/RPM | Portable si `podman` + `distrobox` existen |
 | pacman/AUR | Arch-only |
 | Snapper | BTRFS/Snapper-only |
-| Bootstrap actual | Arch-only si instala dependencias host con `pacman` |
+| Bootstrap actual | Portable si `podman` + `distrobox` ya existen; no instala dependencias host |
 
 Decisión de producto:
 
@@ -337,6 +337,8 @@ Separar:
 - bootstrap de dependencias host (`podman`, `distrobox`)
 - creación de cajas
 - instalación de librerías dentro de cajas
+- mantener `setup-host --apply` y el bridge sin instalaciones host automáticas
+- mostrar comandos recomendados por distro para dependencias host, no ejecutarlos sin terminal/sudo explícito
 
 Host package manager por distro:
 
@@ -355,10 +357,13 @@ El bridge debe devolver JSON con:
 - `distro`
 - `manager`
 - `package`
+- `real_package`
 - `app_id`
 - `desktop_id`
 - `exported_desktop`
 - `repair_actions`
+- `url_bridge_override`
+- `warnings`
 
 `mpm-pkg` debe guardar ese manifiesto.
 
@@ -390,6 +395,19 @@ Crear ahora? Descargará imagen base y compartirá el HOME del usuario. [y/N]
 - permitir override XDG en `~/.config/mpm/library_maps.json`
 - generar wrappers opcionales en `~/.local/bin` para apps instaladas por AppImage/Distrobox
 - no prometer sandbox: los wrappers deben indicar backend, caja y binario real
+
+### 0.18.7 — Comunicación visible de riesgos
+
+- mostrar en GUI/preflight que Distrobox separa gestores de paquetes pero no es sandbox de seguridad
+- indicar que las apps dentro de cajas pueden compartir HOME, sesión gráfica, D-Bus y audio según configuración
+- trasladar los warnings de `CatalogRoute`/manifiesto a la UI antes de instalar
+- no usar lenguaje que sugiera aislamiento fuerte; usar "host limpio" o "gestor aislado", no "app segura"
+
+### 0.18.8 — Búsqueda pacman sin sudo silencioso
+
+- revisar `PacmanProvider` para que no ejecute `sudo -n pacman -Ss` de forma implícita durante búsquedas
+- si la base de datos de pacman no es legible, devolver estado `warning` con acción sugerida
+- cualquier búsqueda privilegiada debe ser opt-in y visible para el usuario
 
 ---
 
