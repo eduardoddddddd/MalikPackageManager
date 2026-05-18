@@ -34,6 +34,9 @@ TERMINAL_CANDIDATES = (
     "xfce4-terminal",
     "alacritty",
     "kitty",
+    "wezterm",
+    "foot",
+    "st",
     "xterm",
 )
 
@@ -188,7 +191,27 @@ def detect_desktop(env: Mapping[str, str] | None = None) -> str:
     return raw.split()[0].replace(":", "-")
 
 
-def choose_terminal(commands: Mapping[str, str | None]) -> str | None:
+def _terminal_command_from_env(value: str) -> str:
+    try:
+        parts = shlex.split(value, comments=False, posix=True)
+    except ValueError:
+        parts = value.split()
+    if not parts:
+        return ""
+    return Path(parts[0]).name
+
+
+def choose_terminal(
+    commands: Mapping[str, str | None],
+    *,
+    env: Mapping[str, str] | None = None,
+    finder: Callable[[str], str | None] = shutil.which,
+) -> str | None:
+    env = env or os.environ
+    for env_name in ("MPM_TERMINAL", "TERMINAL"):
+        terminal = _terminal_command_from_env(env.get(env_name, ""))
+        if terminal and (commands.get(terminal) or finder(terminal)):
+            return terminal
     for terminal in TERMINAL_CANDIDATES:
         if commands.get(terminal):
             return terminal
@@ -236,7 +259,7 @@ def detect_host(
         portable_backends=portable_backends_for(commands),
         snapshot=snapshot_status(commands, snapper_root_config),
         desktop=detect_desktop(env),
-        terminal=choose_terminal(commands),
+        terminal=choose_terminal(commands, env=env, finder=finder),
     )
 
 

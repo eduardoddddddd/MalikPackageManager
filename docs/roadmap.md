@@ -5,6 +5,7 @@ Objetivo final: **MPM estable, instalable y honesto operacionalmente**. El host 
 Este roadmap incorpora las conclusiones de:
 
 - `Claude Analisis.md`
+- `Analisis Gemini.md`
 - `impacto en linux.md`
 - `revision-codex.md`
 
@@ -63,9 +64,10 @@ Fork autónomo de Malik Store con CLI, GUI, catálogo y búsqueda federada.
 - ✅ Instalaciones registran manifiesto interno en SQLite
 - ✅ Detección de host basada en `/etc/os-release`, `ID`, `ID_LIKE` y comandos disponibles
 - ✅ `mpm-pkg host-info` con salida humana y `--json`
+- ✅ `mpm-pkg setup-host --check/--plan` con salida humana y `--json`
 - ✅ `pacman`/AUR se limitan a hosts Arch/Arch-like con comandos disponibles
 - ✅ Flatpak/AppImage siguen portables y Distrobox se reporta portable con `podman` + `distrobox`
-- ✅ `mpm-open` ya no depende directamente de Konsole y detecta terminal disponible
+- ✅ `mpm-open` ya no depende directamente de Konsole y detecta terminal disponible, respetando `MPM_TERMINAL`/`TERMINAL`
 - ✅ `repair-desktop` refresca integración XDG de forma agnóstica; `repair-kde` queda como alias legacy
 
 ### Limitaciones actuales
@@ -77,7 +79,7 @@ Fork autónomo de Malik Store con CLI, GUI, catálogo y búsqueda federada.
 - ⚠️ Distrobox no es sandbox de seguridad, solo separa gestores de paquetes
 - ⚠️ Desinstalación Distrobox depende demasiado de `app_id`
 - ⚠️ `.desktop` del handler de paquetes necesita que exista alguna terminal soportada si el gestor de archivos no provee TTY
-- ⚠️ `setup-host --check/--plan` existe; `--apply` sigue bloqueado hasta cerrar reglas de mutación host
+- ⚠️ `setup-host --apply` solo ejecuta acciones no-sudo; dependencias host, AUR helper y Snapper siguen siendo manuales
 - ⚠️ Sin paquete distribuible
 
 ---
@@ -291,9 +293,14 @@ create box: mpm-ubuntu-apps
 
 ### 0.17.3 — `setup-host --apply`
 
-Estado: pendiente. El comando existe pero rechaza ejecución real hasta que las reglas de mutación host estén cerradas y cubiertas por tests.
+Estado: ✅ completado con política conservadora.
 
-Ejecuta solo con confirmación explícita.
+Ejecuta solo con confirmación explícita:
+
+```bash
+mpm-pkg setup-host --plan
+mpm-pkg setup-host --apply --yes
+```
 
 Reglas:
 
@@ -301,6 +308,21 @@ Reglas:
 - no usar `--noconfirm` sin preflight
 - no configurar Snapper automáticamente sin explicar BTRFS/rollback
 - en no-Arch, no intentar instalar con `pacman`
+- distinguir acciones de usuario de acciones automatizables:
+  - automatizable: Flathub user remote y creación de contenedor Distrobox tras confirmación
+  - requiere terminal/sudo explícito: instalar dependencias host (`flatpak`, `podman`, `distrobox`, PySide6)
+  - solo recomendación/manual: instalar AUR helper, configurar Snapper/root/BTRFS
+
+### 0.17.4 — Hardening sugerido por Gemini ✅
+
+Antes de desbloquear `--apply`:
+
+- respetar `MPM_TERMINAL` y `TERMINAL` antes de la lista fija de terminales
+- ampliar terminales comunes de power users (`wezterm`, `foot`, `st`)
+- exponer `setup-host --check/--json` y `setup-host --plan --json` para GUI/scripts
+- simplificar código redundante de paquetes `podman`/`distrobox`
+- hacer el parser de `distrobox list` más defensivo ante tablas con `|` o columnas por espacios
+- mantener Snapper como warning/override explícito cuando no aplique, no como configuración automática de `setup-host`
 
 ---
 
@@ -362,6 +384,13 @@ Contenedor mpm-ubuntu-apps no encontrado.
 Crear ahora? Descargará imagen base y compartirá el HOME del usuario. [y/N]
 ```
 
+### 0.18.6 — AppImage/Distrobox power-user
+
+- extraer el mapa de librerías faltantes de AppImage a `configs/mpm/library_maps.json`
+- permitir override XDG en `~/.config/mpm/library_maps.json`
+- generar wrappers opcionales en `~/.local/bin` para apps instaladas por AppImage/Distrobox
+- no prometer sandbox: los wrappers deben indicar backend, caja y binario real
+
 ---
 
 ## 0.19 — Paquete Arch / AUR
@@ -397,6 +426,12 @@ post_install() {
 - `shellcheck` si está disponible
 - construcción de paquete Arch en entorno limpio
 
+### 0.19.4 — Hook pacman opcional
+
+- instalar como documentación u opt-in, no como comportamiento agresivo
+- detectar cambios realizados fuera de MPM y marcarlos como estado externo
+- nunca mutar el sistema desde el hook; solo reconciliar historial/cache cuando sea seguro
+
 ---
 
 ## 0.20 — Asistente gráfico de primer uso
@@ -406,6 +441,7 @@ post_install() {
 - estado visual de backends
 - botones por backend
 - explicación de riesgo por ruta
+- mostrar permisos Flatpak con `flatpak info --show-permissions` cuando aplique
 - terminal/polkit para acciones con privilegios
 - posibilidad de omitir backends
 - guardar `~/.config/mpm/preferences.json`
@@ -427,7 +463,7 @@ No debe crear Snapper, instalar AUR ni crear contenedores sin confirmación expl
 - [x] AppImage/vendor con SHA256 o warning bloqueante/confirmable
 - [x] Manifiestos post-install
 - [ ] Distrobox DEB/RPM con uninstall fiable
-- [ ] `setup-host --check/--plan/--apply` (`check` y `plan` listos; `apply` pendiente)
+- [x] `setup-host --check/--plan/--apply` seguro y conservador
 - [ ] Bootstrap Distrobox multi-distro
 - [x] `.desktop` sin dependencia de Konsole
 - [ ] PKGBUILD publicado en AUR
@@ -450,3 +486,7 @@ No debe crear Snapper, instalar AUR ni crear contenedores sin confirmación expl
 | GUI de preferencias | Backends, cajas, proxy, riesgo, políticas |
 | Soporte pacman hooks | Detectar apps instaladas fuera de MPM |
 | Firma GPG del catálogo | Integridad del catálogo curado |
+| Estado declarativo | `mpm-pkg export --json` y `mpm-pkg apply --plan` |
+| Búsqueda asíncrona | Paralelizar proveedores federados con timeout por backend |
+| CLI interactiva | TUI/fzf para buscar, comparar rutas e instalar desde terminal |
+| Catálogos remotos | `mpm-pkg catalog add URL` con validación y futura firma |

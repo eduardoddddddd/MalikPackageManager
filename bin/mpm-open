@@ -15,7 +15,12 @@ fi
 
 choose_terminal() {
   local candidate
-  for candidate in konsole gnome-terminal xfce4-terminal alacritty kitty xterm; do
+  for candidate in "${MPM_TERMINAL:-}" "${TERMINAL:-}" konsole gnome-terminal xfce4-terminal alacritty kitty wezterm foot st xterm; do
+    candidate="${candidate%% *}"
+    candidate="${candidate##*/}"
+    if [[ -z "$candidate" ]]; then
+      continue
+    fi
     if command -v "$candidate" >/dev/null 2>&1; then
       printf '%s\n' "$candidate"
       return 0
@@ -47,6 +52,15 @@ if [[ ! -t 0 && -z "${MPM_OPEN_IN_TERMINAL:-}" ]]; then
       ;;
     kitty)
       exec kitty --hold "$0" "$target"
+      ;;
+    wezterm)
+      exec wezterm start --always-new-process -- "$0" "$target"
+      ;;
+    foot)
+      exec foot "$0" "$target"
+      ;;
+    st)
+      exec st -e "$0" "$target"
       ;;
     xterm)
       exec xterm -hold -e "$0" "$target"

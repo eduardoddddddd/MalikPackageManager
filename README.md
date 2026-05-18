@@ -394,7 +394,11 @@ Los backends DEB y RPM requieren contenedores Distrobox. Primero revisa el plan 
 mpm-pkg setup-host --check
 mpm-pkg setup-host --plan
 
-# Cuando podman/distrobox ya existen, crea los tres contenedores
+# Cuando podman/distrobox ya existen, aplica solo acciones no-sudo:
+# Flathub user remote y contenedores Distrobox que falten
+mpm-pkg setup-host --apply --yes
+
+# Alternativa directa del bridge: crea los tres contenedores
 # (descarga ~500 MB en total)
 scripts/distrobox/mpm-distrobox-bridge.sh bootstrap
 ```
@@ -407,7 +411,7 @@ mpm-debian-apps   # Debian estable
 mpm-fedora-apps   # Fedora — para .rpm y dnf
 ```
 
-`bootstrap` ya no instala paquetes del host. Si faltan `podman` o `distrobox`, se detiene y debes seguir el plan explícito de `setup-host`.
+`setup-host --apply` y `bootstrap` no instalan paquetes del host. Si faltan `podman` o `distrobox`, se detienen o dejan la acción como manual y debes seguir el plan explícito de `setup-host`.
 
 ---
 
@@ -419,7 +423,7 @@ Orden nuevo:
 
 1. `0.15`: seguridad operacional y honestidad. ✓
 2. `0.16`: portabilidad de host base. ✓
-3. `0.17`: `setup-host --check/--plan/--apply`.
+3. `0.17`: `setup-host --check/--plan/--apply` seguro.
 4. `0.18`: Distrobox robusto.
 5. `0.19`: PKGBUILD/AUR.
 6. `0.20`: asistente gráfico de primer uso.
@@ -483,7 +487,7 @@ Ver la hoja de ruta completa en [docs/roadmap.md](docs/roadmap.md).
 | **0.14-mvp + hardening** ✓ | Base funcional, tests, GUI offscreen, vendor index válido |
 | **0.15** ✓ | Seguridad operacional: AUR review, preflight host, Snapper opcional, sudo/terminal, AppImage seguro, manifiestos |
 | **0.16** ✓ | Portabilidad base: distro detection, terminal/escritorio agnóstico, degradación no-Arch |
-| **0.17** | `setup-host --check/--plan/--apply` seguro |
+| **0.17** ✓ | `setup-host --check/--plan/--apply` seguro |
 | **0.18** | Distrobox robusto: bootstrap multi-distro, manifiestos, uninstall fiable |
 | **0.19** | PKGBUILD + publicación AUR |
 | **0.20** | Asistente gráfico de primer uso |

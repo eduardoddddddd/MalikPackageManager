@@ -371,6 +371,33 @@ class MalikpkgCliTests(unittest.TestCase):
         self.assertIn("- container:mpm-ubuntu-apps: ok - exists", output)
         self.assertIn("- terminal: ok - kitty", output)
 
+    def test_setup_host_check_json_reports_checks_and_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            fake_bin = tmp / "bin"
+            fake_bin.mkdir()
+            write_executable(fake_bin / "apt", "#!/bin/sh\nexit 0\n")
+            write_executable(fake_bin / "ghostty", "#!/bin/sh\nexit 0\n")
+            os_release = write_os_release(tmp / "os-release", "ID=debian\nID_LIKE=debian\n")
+
+            output = run_mpm_pkg_env(
+                {
+                    "MPM_HOST_OS_RELEASE": str(os_release),
+                    "PATH": str(fake_bin),
+                    "MPM_TERMINAL": "ghostty --wait",
+                },
+                "setup-host",
+                "--check",
+                "--json",
+            )
+
+        payload = json.loads(output)
+        self.assertEqual(payload["mode"], "check")
+        self.assertEqual(payload["host"]["host_family"], "debian")
+        self.assertEqual(payload["host"]["terminal"], "ghostty")
+        self.assertTrue(any(check["name"] == "flatpak" for check in payload["checks"]))
+        self.assertIn("install flatpak: sudo apt install flatpak", payload["actions"])
+
     def test_setup_host_plan_recommends_missing_portable_setup(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
@@ -392,6 +419,126 @@ class MalikpkgCliTests(unittest.TestCase):
         self.assertIn("install flatpak: sudo apt install flatpak", output)
         self.assertIn("install podman and distrobox: sudo apt install podman distrobox", output)
         self.assertIn("install terminal:", output)
+
+    def test_setup_host_plan_json_uses_plan_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            fake_bin = tmp / "bin"
+            fake_bin.mkdir()
+            write_executable(fake_bin / "apt", "#!/bin/sh\nexit 0\n")
+            os_release = write_os_release(tmp / "os-release", "ID=debian\nID_LIKE=debian\n")
+
+            output = run_mpm_pkg_env(
+                {
+                    "MPM_HOST_OS_RELEASE": str(os_release),
+                    "PATH": str(fake_bin),
+                },
+                "setup-host",
+                "--plan",
+                "--json",
+            )
+
+        payload = json.loads(output)
+        self.assertEqual(payload["mode"], "plan")
+        self.assertIn("install flatpak: sudo apt install flatpak", payload["actions"])
+
+    def test_setup_host_apply_requires_yes(self) -> None:
+        result = run_mpm_pkg_failure({}, "setup-host", "--apply")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("setup-host --apply requires --yes", result.stderr)
+
+    def test_setup_host_apply_runs_only_safe_non_sudo_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            fake_bin = tmp / "bin"
+            fake_bin.mkdir()
+            log = tmp / "commands.log"
+            write_executable(fake_bin / "apt", "#!/bin/sh\nexit 0\n")
+            write_executable(
+                fake_bin / "flatpak",
+                "\n".join(
+                    [
+                        "#!/bin/sh",
+                        f"printf 'flatpak %s\\n' \"$*\" >> {log}",
+                        "if [ \"$1\" = remotes ]; then exit 0; fi",
+                        "exit 0",
+                    ]
+                )
+                + "\n",
+            )
+            write_executable(fake_bin / "podman", "#!/bin/sh\nexit 0\n")
+            write_executable(
+                fake_bin / "distrobox",
+                "\n".join(
+                    [
+                        "#!/bin/sh",
+                        f"printf 'distrobox %s\\n' \"$*\" >> {log}",
+                        "if [ \"$1\" = list ]; then printf 'ID | NAME | STATUS | IMAGE\\n'; fi",
+                        "exit 0",
+                    ]
+                )
+                + "\n",
+            )
+            os_release = write_os_release(tmp / "os-release", "ID=debian\nID_LIKE=debian\n")
+
+            output = run_mpm_pkg_env(
+                {
+                    "MPM_HOST_OS_RELEASE": str(os_release),
+                    "PATH": str(fake_bin),
+                },
+                "setup-host",
+                "--apply",
+                "--yes",
+            )
+
+            commands = log.read_text(encoding="utf-8")
+
+        self.assertIn("setup-host-apply:", output)
+        self.assertIn("- add flathub: applied", output)
+        self.assertIn("- create box mpm-ubuntu-apps: applied", output)
+        self.assertIn("manual-actions:", output)
+        self.assertIn("install PySide6:", output)
+        self.assertIn("flatpak remote-add --if-not-exists flathub", commands)
+        self.assertIn("distrobox create --name mpm-ubuntu-apps", commands)
+        self.assertNotIn("apt install", commands)
+        self.assertNotIn("sudo", commands)
+
+    def test_setup_host_apply_json_reports_results_and_manual_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            fake_bin = tmp / "bin"
+            fake_bin.mkdir()
+            write_executable(fake_bin / "apt", "#!/bin/sh\nexit 0\n")
+            write_executable(
+                fake_bin / "flatpak",
+                "\n".join(
+                    [
+                        "#!/bin/sh",
+                        "if [ \"$1\" = remotes ]; then exit 0; fi",
+                        "exit 0",
+                    ]
+                )
+                + "\n",
+            )
+            os_release = write_os_release(tmp / "os-release", "ID=debian\nID_LIKE=debian\n")
+
+            output = run_mpm_pkg_env(
+                {
+                    "MPM_HOST_OS_RELEASE": str(os_release),
+                    "PATH": str(fake_bin),
+                },
+                "setup-host",
+                "--apply",
+                "--yes",
+                "--json",
+            )
+
+        payload = json.loads(output)
+        self.assertEqual(payload["mode"], "apply")
+        self.assertEqual(payload["results"][0]["id"], "add-flathub")
+        self.assertEqual(payload["results"][0]["state"], "applied")
+        self.assertIn("install podman and distrobox: sudo apt install podman distrobox", payload["manual_actions"])
 
     def test_pacman_blocks_on_non_arch_with_clear_message(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

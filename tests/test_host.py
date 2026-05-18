@@ -16,6 +16,7 @@ from mpm.host import (  # noqa: E402
     detect_host,
     parse_os_release_text,
 )
+from mpm.setup_host import _box_names_from_output  # noqa: E402
 
 
 class HostDetectionTests(unittest.TestCase):
@@ -74,6 +75,30 @@ class HostDetectionTests(unittest.TestCase):
         }
 
         self.assertEqual(choose_terminal(commands), "xfce4-terminal")
+
+    def test_choose_terminal_prefers_mpm_terminal_env(self) -> None:
+        commands = {
+            "konsole": "/bin/konsole",
+            "ghostty": None,
+        }
+
+        selected = choose_terminal(
+            commands,
+            env={"MPM_TERMINAL": "ghostty --wait"},
+            finder=lambda name: "/bin/ghostty" if name == "ghostty" else None,
+        )
+
+        self.assertEqual(selected, "ghostty")
+
+    def test_box_names_from_output_handles_pipe_and_whitespace_tables(self) -> None:
+        output = """
+        ID           | NAME            | STATUS  | IMAGE
+        123456789abc | mpm-ubuntu-apps | running | ubuntu:24.04
+        ID NAME STATUS IMAGE
+        abcdef mpm-fedora-apps exited fedora:latest
+        """
+
+        self.assertEqual(_box_names_from_output(output), {"mpm-ubuntu-apps", "mpm-fedora-apps"})
 
 
 if __name__ == "__main__":

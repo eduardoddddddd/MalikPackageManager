@@ -36,7 +36,15 @@ from mpm.host import (  # noqa: E402
     format_host_info,
     host_info_json,
 )
-from mpm.setup_host import build_setup_report, format_setup_check, format_setup_plan  # noqa: E402
+from mpm.setup_host import (  # noqa: E402
+    apply_setup_report,
+    build_setup_report,
+    format_setup_apply,
+    format_setup_check,
+    format_setup_plan,
+    setup_apply_json,
+    setup_report_json,
+)
 
 
 APP_NAME = "mpm-pkg"
@@ -2126,11 +2134,13 @@ def build_parser() -> argparse.ArgumentParser:
     host_info_parser = subparsers.add_parser("host-info", help="show detected host capabilities")
     host_info_parser.add_argument("--json", action="store_true", help="print host info as JSON")
 
-    setup_parser = subparsers.add_parser("setup-host", help="check or plan safe host setup")
+    setup_parser = subparsers.add_parser("setup-host", help="check, plan, or apply safe host setup")
     setup_mode = setup_parser.add_mutually_exclusive_group(required=True)
     setup_mode.add_argument("--check", action="store_true", help="report host readiness without changing anything")
     setup_mode.add_argument("--plan", action="store_true", help="print recommended setup actions without executing them")
-    setup_mode.add_argument("--apply", action="store_true", help="reserved for explicit future host setup execution")
+    setup_mode.add_argument("--apply", action="store_true", help="apply non-sudo setup actions after explicit confirmation")
+    setup_parser.add_argument("--json", action="store_true", help="print setup report as JSON")
+    setup_parser.add_argument("--yes", action="store_true", help="confirm setup-host --apply after reviewing --plan")
 
     detect_parser = subparsers.add_parser("detect", help="detect target type and default backend")
     detect_parser.add_argument("target")
@@ -2191,10 +2201,23 @@ def main() -> int:
             info = detect_host()
             print(host_info_json(info) if args.json else format_host_info(info))
         elif args.command == "setup-host":
-            if args.apply:
-                raise SystemExit("setup-host --apply is not implemented yet; run --check or --plan first.")
+            if args.apply and not args.yes:
+                raise SystemExit(
+                    "setup-host --apply requires --yes after reviewing --plan. "
+                    "It only runs non-sudo actions; host packages, AUR helpers, and Snapper remain manual."
+                )
             report = build_setup_report()
-            print(format_setup_plan(report) if args.plan else format_setup_check(report))
+            mode = "apply" if args.apply else "plan" if args.plan else "check"
+            if args.apply:
+                results = apply_setup_report(report)
+                print(setup_apply_json(report, results) if args.json else format_setup_apply(report, results))
+                if any(result.state == "failed" for result in results):
+                    return 1
+                return 0
+            if args.json:
+                print(setup_report_json(report, mode=mode))
+            else:
+                print(format_setup_plan(report) if args.plan else format_setup_check(report))
         elif args.command == "detect":
             detected = detect_target(args.target)
             for key in ("source", "kind", "backend"):
