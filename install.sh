@@ -9,11 +9,32 @@ LIBDIR="${LIBDIR:-"$PREFIX/lib/mpm"}"
 SHAREDIR="${SHAREDIR:-"$PREFIX/share/mpm"}"
 CFGDIR="${CFGDIR:-"${XDG_CONFIG_HOME:-"$HOME/.config"}/mpm"}"
 APPDIR="${APPDIR:-"$PREFIX/share/applications"}"
+WITH_VENV="${MPM_WITH_VENV:-0}"
+VENV_DIR="${MPM_VENV_DIR:-"$LIBDIR/venv"}"
+LIB_BINDIR="$LIBDIR/bin"
 
-install -d "$BINDIR" "$LIBDIR/src" "$SHAREDIR" "$CFGDIR" "$APPDIR"
+install -d "$BINDIR" "$LIBDIR/src" "$SHAREDIR" "$CFGDIR" "$APPDIR" "$LIB_BINDIR"
 
-install -m 755 "$ROOT_DIR/bin/mpm" "$BINDIR/mpm"
-install -m 755 "$ROOT_DIR/bin/mpm-pkg" "$BINDIR/mpm-pkg"
+if [ "$WITH_VENV" = "1" ]; then
+  python -m venv "$VENV_DIR"
+  "$VENV_DIR/bin/python" -m pip install --upgrade pip
+  "$VENV_DIR/bin/python" -m pip install PySide6
+  install -m 755 "$ROOT_DIR/bin/mpm" "$LIB_BINDIR/mpm"
+  install -m 755 "$ROOT_DIR/bin/mpm-pkg" "$LIB_BINDIR/mpm-pkg"
+  cat > "$BINDIR/mpm" <<EOF
+#!/usr/bin/env bash
+exec "$VENV_DIR/bin/python" "$LIB_BINDIR/mpm" "\$@"
+EOF
+  cat > "$BINDIR/mpm-pkg" <<EOF
+#!/usr/bin/env bash
+exec "$VENV_DIR/bin/python" "$LIB_BINDIR/mpm-pkg" "\$@"
+EOF
+  chmod 755 "$BINDIR/mpm"
+  chmod 755 "$BINDIR/mpm-pkg"
+else
+  install -m 755 "$ROOT_DIR/bin/mpm" "$BINDIR/mpm"
+  install -m 755 "$ROOT_DIR/bin/mpm-pkg" "$BINDIR/mpm-pkg"
+fi
 install -m 755 "$ROOT_DIR/bin/mpm-open" "$BINDIR/mpm-open"
 install -m 755 "$ROOT_DIR/bin/mpm-host-open-url" "$BINDIR/mpm-host-open-url"
 
@@ -48,3 +69,7 @@ MPM installed.
   config:  $CFGDIR
   desktop: $APPDIR
 EOF
+
+if [ "$WITH_VENV" = "1" ]; then
+  printf '  venv:    %s\n' "$VENV_DIR"
+fi

@@ -16,7 +16,7 @@ from mpm.host import (  # noqa: E402
     detect_host,
     parse_os_release_text,
 )
-from mpm.setup_host import _box_names_from_output  # noqa: E402
+from mpm.setup_host import _box_names_from_output, _pyside_package  # noqa: E402
 
 
 class HostDetectionTests(unittest.TestCase):
@@ -99,6 +99,15 @@ class HostDetectionTests(unittest.TestCase):
         """
 
         self.assertEqual(_box_names_from_output(output), {"mpm-ubuntu-apps", "mpm-fedora-apps"})
+
+    def test_pyside_package_uses_real_arch_package_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            os_release = tmp / "os-release"
+            os_release.write_text("ID=cachyos\nID_LIKE=arch\n", encoding="utf-8")
+            info = detect_host(os_release_path=os_release, finder=lambda _name: None)
+
+        self.assertEqual(_pyside_package(info), "pyside6")
 
 
 if __name__ == "__main__":

@@ -613,7 +613,7 @@ def parse_aur_rpc_search_response(payload: str) -> list[AurSearchEntry]:
 
 
 def fetch_url_text(url: str, timeout: float | None = 3.0) -> str:
-    request = Request(url, headers={"User-Agent": "mpm/0.17-dev aur-provider"})
+    request = Request(url, headers={"User-Agent": "mpm/1.0.0 aur-provider"})
     with urlopen(request, timeout=timeout) as response:
         charset = response.headers.get_content_charset() or "utf-8"
         return response.read().decode(charset, errors="replace")
@@ -1568,13 +1568,16 @@ class PacmanProvider:
                 timeout=timeout,
             )
             if completed.returncode != 0 and "could not open database" in completed.stderr:
-                completed = self.runner(
-                    ["sudo", "-n", self.command, "-Ss", query],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
+                self.last_status = ProviderStatus(
+                    provider=self.provider_id,
+                    state="warning",
+                    message=(
+                        "pacman database is not readable by the current user; "
+                        "run pacman search from a terminal or repair database permissions"
+                    ),
+                    result_count=0,
                 )
+                return []
         except (OSError, subprocess.SubprocessError) as exc:
             self.last_status = ProviderStatus(
                 provider=self.provider_id,

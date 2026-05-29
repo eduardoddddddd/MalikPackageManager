@@ -5,6 +5,10 @@ import re
 from pathlib import Path
 
 
+DISCOVERY_ONLY_BACKENDS = {"distrobox-apt", "distrobox-dnf"}
+DISTROBOX_INSTALL_BACKENDS = {"distrobox-deb", "distrobox-rpm"}
+
+
 def parse_key_values(output: str) -> dict[str, str]:
     values: dict[str, str] = {}
     for line in output.splitlines():
@@ -22,6 +26,105 @@ def resolved_preflight_backend(selected_backend: str, preflight_output: str) -> 
 
 def preflight_requires_host_confirmation(selected_backend: str, preflight_output: str) -> bool:
     return resolved_preflight_backend(selected_backend, preflight_output) in {"pacman", "aur"}
+
+
+def is_discovery_only_backend(backend: str) -> bool:
+    return backend in DISCOVERY_ONLY_BACKENDS
+
+
+def format_discovery_only_backend_message(backend: str) -> str:
+    return (
+        f"{backend} is discovery-only in this GUI. MPM can search these native package indexes, "
+        "but install support is intentionally limited to distrobox-deb and distrobox-rpm routes for now."
+    )
+
+
+def format_distrobox_risk_notice() -> str:
+    return (
+        "Distrobox separates package managers into containers, but it is not a strong sandbox. "
+        "GUI exports commonly share your HOME, graphical session, D-Bus, and audio services with the host."
+    )
+
+
+def backend_status_from_setup_report_json(output: str) -> dict[str, dict[str, str]]:
+    try:
+        payload = json.loads(output)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+
+    host = payload.get("host")
+    checks = payload.get("checks")
+    if not isinstance(host, dict) or not isinstance(checks, list):
+        return {}
+
+    host_backends = {str(item) for item in host.get("host_backends", []) if isinstance(item, str)}
+    portable_backends = {str(item) for item in host.get("portable_backends", []) if isinstance(item, str)}
+    family = str(host.get("host_family", "unknown") or "unknown")
+    check_by_name = {
+        str(check.get("name", "")): {
+            "state": str(check.get("state", "unknown") or "unknown"),
+            "detail": str(check.get("detail", "") or ""),
+        }
+        for check in checks
+        if isinstance(check, dict)
+    }
+
+    def check_state(name: str, default_state: str = "unknown", default_detail: str = "") -> dict[str, str]:
+        found = check_by_name.get(name)
+        if found:
+            return dict(found)
+        return {"state": default_state, "detail": default_detail}
+
+    statuses: dict[str, dict[str, str]] = {
+        "pacman": {
+            "state": "ok" if "pacman" in host_backends else "missing",
+            "detail": "available on this Arch host" if "pacman" in host_backends else f"not available on {family} host",
+        },
+        "aur": {
+            "state": "ok" if "aur" in host_backends else check_state("aur-helper", "missing")["state"],
+            "detail": "AUR helper available" if "aur" in host_backends else check_state("aur-helper", "missing")["detail"],
+        },
+        "flatpak": {
+            "state": "ok" if "flatpak" in portable_backends else check_state("flatpak", "missing")["state"],
+            "detail": check_state("flatpak", "missing")["detail"],
+        },
+        "appimage": {
+            "state": "ok" if "appimage" in portable_backends else "warning",
+            "detail": "portable file route; verify checksums for vendor artifacts",
+        },
+    }
+
+    distrobox_ready = "distrobox" in portable_backends
+    distrobox_check = check_state("distrobox", "missing")
+    podman_check = check_state("podman", "missing")
+    for backend, preferred_boxes in {
+        "distrobox-deb": ("container:mpm-ubuntu-apps", "container:mpm-debian-apps"),
+        "distrobox-rpm": ("container:mpm-fedora-apps",),
+    }.items():
+        if not distrobox_ready:
+            detail = "; ".join(
+                item
+                for item in [podman_check.get("detail", ""), distrobox_check.get("detail", "")]
+                if item
+            )
+            statuses[backend] = {"state": "missing", "detail": detail or "podman and distrobox are required"}
+            continue
+        box_states = [check_state(name, "missing") for name in preferred_boxes]
+        if any(item["state"] == "ok" for item in box_states):
+            statuses[backend] = {"state": "ok", "detail": "Distrobox runtime and base box available"}
+        else:
+            details = ", ".join(item["detail"] for item in box_states if item["detail"])
+            statuses[backend] = {"state": "warning", "detail": details or "base Distrobox container needs creation"}
+
+    for backend in DISCOVERY_ONLY_BACKENDS:
+        statuses[backend] = {
+            "state": "discovery-only",
+            "detail": "searchable package index; GUI install is not enabled",
+        }
+
+    return statuses
 
 
 def format_catalog_detail(entry: dict[str, str] | None) -> str:
@@ -154,6 +257,14 @@ def format_preflight_confirmation(
             [
                 "AUR packages are community supplied.",
                 "Review the PKGBUILD and install scripts before accepting the helper prompts.",
+            ]
+        )
+    if resolved_backend in DISTROBOX_INSTALL_BACKENDS:
+        lines.extend(
+            [
+                "",
+                "Distrobox risk:",
+                format_distrobox_risk_notice(),
             ]
         )
     return "\n".join(lines)

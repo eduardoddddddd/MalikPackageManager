@@ -1,10 +1,10 @@
 # MPM — Malik Package Manager
 
-Versión **0.17-dev setup-host seguro** · Host primario Arch Linux · Python 3 + PySide6
+Versión **1.0.0 estable local** · Host primario Arch Linux · Python 3 + PySide6
 
 Gestor de aplicaciones unificado para Arch Linux. Instala y gestiona apps a través de múltiples backends — Flatpak, pacman, AUR, AppImage y paquetes DEB/RPM en contenedores Distrobox — bajo una política consistente y con registro completo de historial.
 
-**Objetivo de desarrollo:** MPM estable, instalable y honesto operacionalmente. El paquete AUR sigue siendo un objetivo, pero antes se priorizan preflight, seguridad AUR, Snapper opcional, terminal/sudo fiable, manifiestos post-install y Distrobox robusto. Ver [docs/roadmap.md](docs/roadmap.md).
+**Estado de desarrollo:** MPM 1.0.0 está preparado para instalación local, empaquetado Arch y uso honesto operacionalmente. La publicación externa en AUR queda como acción deliberada separada. Ver [docs/roadmap.md](docs/roadmap.md) y [docs/user-guide.md](docs/user-guide.md).
 
 ---
 
@@ -66,12 +66,14 @@ Distrobox mantiene DEB/RPM fuera del gestor Arch, pero **no es un sandbox de seg
 | `flatpak` backend | ✅ Operativo con `flatpak` instalado |
 | `aur` backend | ✅ Operativo con `yay` o `paru` |
 | GUI búsqueda y exploración | ✅ Validado con PySide6 en venv y Qt offscreen |
-| Catálogo/vendor index | ✅ JSON validado; vendor index incluye rutas Cursor |
+| Catálogo/vendor index | ✅ JSON validado; catálogo curado de 25 apps; vendor index con Cursor, Obsidian, Bitwarden y Joplin |
 | `pacman` backend | ✅ Preflight host, confirmación `--yes`, Snapper explícito |
 | `distrobox-deb/rpm` | ⚠️ Requiere contenedores creados; se endurece en 0.18 |
 | `distrobox-apt/dnf` | ⚠️ Búsqueda solamente; instalación no implementada |
 | Integración `.desktop` | ✅ Handler externo sin dependencia directa de Konsole; `mpm-open` elige terminal disponible |
 | Host no-Arch | ✅ Flatpak/AppImage/Distrobox degradan como portables; pacman/AUR son Arch-only con error claro |
+
+> Estado 0.18 inicial: el bridge Distrobox ya devuelve manifiestos JSON para instalaciones `.deb`/`.rpm` y `mpm-pkg` los guarda en SQLite. La búsqueda `pacman` ya no reintenta con `sudo -n` de forma silenciosa si la base de datos local no es legible.
 
 ---
 
@@ -97,8 +99,8 @@ MalikPackageManager/
 │       └── mpm-distrobox-bridge.sh  # Bridge para operaciones en contenedores
 ├── configs/
 │   ├── mpm/
-│   │   ├── catalog.json         # Catálogo curado (9 apps)
-│   │   └── vendor_index.json    # Rutas vendor/AppImage
+│   │   ├── catalog.json         # Catálogo curado (25 apps)
+│   │   └── vendor_index.json    # Rutas vendor/AppImage/DEB/RPM
 │   └── desktop/
 │       ├── mpm.desktop
 │       └── mpm-package-installer.desktop
@@ -112,7 +114,8 @@ MalikPackageManager/
 │   ├── test_syntax.py
 │   └── test_workflow.py
 ├── docs/
-│   └── roadmap.md               # Hoja de ruta hasta 1.0
+│   ├── roadmap.md               # Hoja de ruta hasta 1.0
+│   └── user-guide.md            # Guía práctica de uso y troubleshooting
 └── Makefile
 ```
 
@@ -138,6 +141,8 @@ MalikPackageManager/
 ---
 
 ## Instalación
+
+Guía completa de usuario: [docs/user-guide.md](docs/user-guide.md).
 
 ### Desde el repositorio (método actual)
 
@@ -180,11 +185,13 @@ make uninstall
 
 Config (`~/.config/mpm/`) y datos (`~/.local/share/mpm/`) se conservan.
 
-### Desde AUR (objetivo 0.19)
+### Desde AUR
 
 ```bash
-yay -S mpm
+yay -S malik-package-manager
 ```
+
+El `PKGBUILD` está incluido en el repo. Publicarlo en AUR requiere una acción externa explícita del mantenedor.
 
 ---
 
@@ -280,11 +287,11 @@ Cada entrada especifica un backend preferido:
 }
 ```
 
-Apps curadas por defecto: Firefox, VLC, OBS Studio, Krita, GIMP, Inkscape, LibreOffice, Blender, btop.
+Apps curadas por defecto: Firefox, Chromium, Thunderbird, VLC, OBS Studio, Krita, GIMP, Inkscape, LibreOffice, Blender, Kdenlive, Audacity, HandBrake, KeePassXC, Zotero, Signal Desktop, Element, Discord, Steam, Heroic Games Launcher, Flatseal, Podman Desktop, DBeaver Community, btop y ripgrep.
 
 ### Vendor / AppImage index
 
-`configs/mpm/vendor_index.json` define rutas para apps que distribuyen su propio instalador. El índice empaquetado incluye Cursor con rutas AppImage, DEB y RPM.
+`configs/mpm/vendor_index.json` define rutas para apps que distribuyen su propio instalador. El índice empaquetado incluye Cursor, Obsidian, Bitwarden y Joplin con rutas AppImage y, cuando el vendor las publica, DEB/RPM para contenedores Distrobox.
 
 Cada ruta puede incluir:
 
@@ -459,7 +466,7 @@ Al ejecutar `mpm-pkg setup-host --check` (objetivo 0.17), el sistema comprueba:
 /usr/share/applications/mpm-package-installer.desktop
 ```
 
-### PKGBUILD (borrador para 0.19)
+### PKGBUILD
 
 ```bash
 pkgname=mpm
@@ -477,6 +484,7 @@ optdepends=(
 ```
 
 Ver la hoja de ruta completa en [docs/roadmap.md](docs/roadmap.md).
+Ver la guía práctica de instalación, backends, riesgos, uninstall, doctor, repair y troubleshooting en [docs/user-guide.md](docs/user-guide.md).
 
 ---
 

@@ -1,4 +1,4 @@
-.PHONY: test validate install install-bin install-config install-desktop install-system-data uninstall
+.PHONY: test validate validate-json lint-shell package-check install install-bin install-config install-desktop install-system-data uninstall
 
 # ── Test ──────────────────────────────────────────────────────────────────────
 
@@ -19,6 +19,41 @@ validate:
 	@echo "==> mpm-pkg --version"
 	bin/mpm-pkg --version
 	@echo "All self-tests passed."
+
+validate-json:
+	@echo "==> JSON syntax"
+	@test -f configs/mpm/catalog.json || { echo "missing configs/mpm/catalog.json"; exit 1; }
+	@test -f configs/mpm/vendor_index.json || { echo "missing configs/mpm/vendor_index.json"; exit 1; }
+	python -m json.tool configs/mpm/catalog.json >/dev/null
+	python -m json.tool configs/mpm/vendor_index.json >/dev/null
+	@for json in tests/fixtures/*.json; do \
+		echo "    $$json"; \
+		python -m json.tool "$$json" >/dev/null; \
+	done
+	@echo "JSON syntax passed."
+
+lint-shell:
+	@echo "==> bash -n"
+	bash -n install.sh
+	bash -n bin/mpm-open
+	bash -n bin/mpm-host-open-url
+	bash -n scripts/distrobox/mpm-distrobox-bridge.sh
+	@if command -v shellcheck >/dev/null 2>&1; then \
+		echo "==> shellcheck"; \
+		shellcheck install.sh bin/mpm-open bin/mpm-host-open-url scripts/distrobox/mpm-distrobox-bridge.sh; \
+	else \
+		echo "shellcheck not installed; skipping optional lint."; \
+	fi
+
+package-check: validate-json lint-shell
+	@echo "==> PKGBUILD syntax"
+	bash -n PKGBUILD
+	@if command -v makepkg >/dev/null 2>&1; then \
+		echo "==> .SRCINFO generation check"; \
+		makepkg --printsrcinfo >/dev/null; \
+	else \
+		echo "makepkg not installed; skipping .SRCINFO generation check."; \
+	fi
 
 # ── Install ───────────────────────────────────────────────────────────────────
 
@@ -43,6 +78,8 @@ install-bin:
 	mkdir -p $(LIBDIR)/src
 	rm -rf $(LIBDIR)/src/mpm
 	cp -R src/mpm $(LIBDIR)/src/mpm
+	find "$(LIBDIR)/src/mpm" -type d -name __pycache__ -prune -exec rm -rf {} +
+	find "$(LIBDIR)/src/mpm" -type f -name '*.py[co]' -delete
 	install -m 755 scripts/distrobox/mpm-distrobox-bridge.sh $(LIBDIR)/mpm-distrobox-bridge.sh
 
 install-system-data:

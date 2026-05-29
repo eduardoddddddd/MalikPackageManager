@@ -1,0 +1,22 @@
+pkgbase = malik-package-manager
+	pkgdesc = Unified app manager for Arch Linux with Flatpak, pacman, AUR, AppImage and Distrobox backends
+	pkgver = 1.0.0
+	pkgrel = 1
+	url = https://github.com/eduardoddddddd/MalikPackageManager
+	arch = any
+	license = custom
+	makedepends = git
+	depends = python>=3.11
+	depends = pyside6
+	depends = flatpak
+	optdepends = yay: AUR backend helper
+	optdepends = paru: AUR backend helper
+	optdepends = snapper: optional Btrfs snapshots before pacman/AUR installs
+	optdepends = podman: container runtime for Distrobox DEB/RPM backends
+	optdepends = distrobox: DEB/RPM/APT/DNF backends in containers
+	provides = mpm
+	conflicts = mpm
+	source = malik-package-manager::git+https://github.com/eduardoddddddd/MalikPackageManager.git
+	sha256sums = SKIP
+
+pkgname = malik-package-manager

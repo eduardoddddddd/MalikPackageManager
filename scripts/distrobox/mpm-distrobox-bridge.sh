@@ -10,6 +10,9 @@ DEBIAN_IMAGE="${MPM_DEBIAN_IMAGE:-docker.io/library/debian:trixie}"
 FEDORA_IMAGE="${MPM_FEDORA_IMAGE:-registry.fedoraproject.org/fedora:44}"
 
 DESKTOP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+MPM_WARNINGS=()
+MPM_REPAIR_ACTIONS=()
+MPM_EXPORTED_APP_ID=""
 
 usage() {
   cat <<EOF
@@ -30,14 +33,16 @@ Environment overrides:
   MPM_UBUNTU_IMAGE=$UBUNTU_IMAGE
   MPM_DEBIAN_IMAGE=$DEBIAN_IMAGE
   MPM_FEDORA_IMAGE=$FEDORA_IMAGE
+  MPM_CREATE_MISSING_BOX=1  create and initialize a missing target box for install-deb/install-rpm
 EOF
 }
 
 log() {
-  printf '==> %s\n' "$*"
+  printf '==> %s\n' "$*" >&2
 }
 
 warn() {
+  MPM_WARNINGS+=("$*")
   printf 'warn: %s\n' "$*" >&2
 }
 
@@ -68,7 +73,7 @@ create_box() {
   fi
 
   log "Creating Distrobox $name from $image"
-  distrobox create --yes --name "$name" --image "$image"
+  distrobox create --yes --unshare-devsys --name "$name" --image "$image"
 }
 
 enter_box() {
@@ -116,6 +121,28 @@ create_boxes() {
   init_rpm_box "$FEDORA_BOX"
 }
 
+ensure_install_box() {
+  local name="$1"
+  local image="$2"
+  local family="$3"
+
+  if container_exists "$name"; then
+    return
+  fi
+
+  if [[ "${MPM_CREATE_MISSING_BOX:-}" != "1" ]]; then
+    die "missing box $name; run $(basename "$0") create-boxes first, or repeat with MPM_CREATE_MISSING_BOX=1 to create only this missing install box"
+  fi
+
+  log "Missing Distrobox $name; creating because MPM_CREATE_MISSING_BOX=1"
+  create_box "$name" "$image"
+  case "$family" in
+    deb) init_deb_box "$name" ;;
+    rpm) init_rpm_box "$name" ;;
+    *) die "unknown install box family: $family" ;;
+  esac
+}
+
 copy_package_to_box() {
   local box="$1"
   local package="$2"
@@ -143,7 +170,80 @@ export_app() {
 
   log "Exporting $app_id from $box"
   enter_box "$box" distrobox-export --app "$app_id"
+  MPM_EXPORTED_APP_ID="$app_id"
   repair_desktop
+}
+
+json_escape() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\n'/\\n}"
+  value="${value//$'\r'/\\r}"
+  value="${value//$'\t'/\\t}"
+  printf '%s' "$value"
+}
+
+json_string() {
+  printf '"%s"' "$(json_escape "$1")"
+}
+
+json_array() {
+  local first=1
+  local item
+  printf '['
+  for item in "$@"; do
+    if [[ "$first" -eq 0 ]]; then
+      printf ','
+    fi
+    first=0
+    json_string "$item"
+  done
+  printf ']'
+}
+
+emit_install_manifest() {
+  local backend="$1"
+  local manager="$2"
+  local box="$3"
+  local distro="$4"
+  local source_package="$5"
+  local copied_package="$6"
+  local real_package="$7"
+  local app_id="$8"
+  local effective_app_id="${MPM_EXPORTED_APP_ID:-$app_id}"
+  local desktop_id=""
+  local exported_desktop=""
+  local manifest
+
+  if [[ -n "$effective_app_id" ]]; then
+    desktop_id="$box-$effective_app_id.desktop"
+    exported_desktop="$DESKTOP_DIR/$desktop_id"
+  fi
+
+  manifest="$(
+    printf '{'
+    printf '"backend":'; json_string "$backend"; printf ','
+    printf '"manager":'; json_string "$manager"; printf ','
+    printf '"box":'; json_string "$box"; printf ','
+    printf '"distro":'; json_string "$distro"; printf ','
+    printf '"package":'; json_string "$(basename "$source_package")"; printf ','
+    printf '"real_package":'; json_string "$real_package"; printf ','
+    printf '"target":'; json_string "$source_package"; printf ','
+    printf '"copied_package":'; json_string "$copied_package"; printf ','
+    printf '"app_id":'; json_string "$effective_app_id"; printf ','
+    printf '"desktop_id":'; json_string "$desktop_id"; printf ','
+    printf '"exported_desktop":'; json_string "$exported_desktop"; printf ','
+    printf '"repair_actions":'; json_array "${MPM_REPAIR_ACTIONS[@]}"; printf ','
+    printf '"url_bridge_override":false,'
+    printf '"warnings":'; json_array "${MPM_WARNINGS[@]}"
+    printf '}'
+  )"
+
+  if [[ -n "${MPM_BRIDGE_MANIFEST:-}" ]]; then
+    printf '%s\n' "$manifest" > "$MPM_BRIDGE_MANIFEST"
+  fi
+  printf 'MPM_BRIDGE_MANIFEST_JSON: %s\n' "$manifest"
 }
 
 export_single_desktop_from_deb_package() {
@@ -235,7 +335,7 @@ install_deb() {
   [[ -n "$package" ]] || die "missing .deb file"
   require_cmd podman
   require_cmd distrobox
-  container_exists "$UBUNTU_BOX" || die "missing box $UBUNTU_BOX; run bootstrap first"
+  ensure_install_box "$UBUNTU_BOX" "$UBUNTU_IMAGE" deb
 
   target="$(copy_package_to_box "$UBUNTU_BOX" "$package" deb)"
   detected_package="$(
@@ -258,6 +358,16 @@ install_deb() {
   else
     warn "package installed; pass APP_ID to export a desktop launcher"
   fi
+
+  emit_install_manifest \
+    "distrobox-deb" \
+    "apt" \
+    "$UBUNTU_BOX" \
+    "ubuntu" \
+    "$package" \
+    "$target" \
+    "$detected_package" \
+    "$app_id"
 }
 
 install_rpm() {
@@ -269,7 +379,7 @@ install_rpm() {
   [[ -n "$package" ]] || die "missing .rpm file"
   require_cmd podman
   require_cmd distrobox
-  container_exists "$FEDORA_BOX" || die "missing box $FEDORA_BOX; run bootstrap first"
+  ensure_install_box "$FEDORA_BOX" "$FEDORA_IMAGE" rpm
 
   target="$(copy_package_to_box "$FEDORA_BOX" "$package" rpm)"
   detected_package="$(
@@ -291,6 +401,16 @@ install_rpm() {
   else
     warn "package installed; pass APP_ID to export a desktop launcher"
   fi
+
+  emit_install_manifest \
+    "distrobox-rpm" \
+    "dnf" \
+    "$FEDORA_BOX" \
+    "fedora" \
+    "$package" \
+    "$target" \
+    "$detected_package" \
+    "$app_id"
 }
 
 repair_desktop() {
@@ -301,6 +421,7 @@ repair_desktop() {
 
   if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 || true
+    MPM_REPAIR_ACTIONS+=("update-desktop-database")
     refreshed=1
   else
     warn "update-desktop-database was not found; desktop MIME cache may refresh later"
@@ -308,19 +429,23 @@ repair_desktop() {
 
   if command -v xdg-desktop-menu >/dev/null 2>&1; then
     xdg-desktop-menu forceupdate >/dev/null 2>&1 || true
+    MPM_REPAIR_ACTIONS+=("xdg-desktop-menu forceupdate")
     refreshed=1
   fi
 
   if command -v gtk-update-icon-cache >/dev/null 2>&1 && [[ -d "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor" ]]; then
     gtk-update-icon-cache -q -t -f "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor" >/dev/null 2>&1 || true
+    MPM_REPAIR_ACTIONS+=("gtk-update-icon-cache")
     refreshed=1
   fi
 
   if command -v kbuildsycoca6 >/dev/null 2>&1; then
     kbuildsycoca6 --noincremental >/dev/null 2>&1 || true
+    MPM_REPAIR_ACTIONS+=("kbuildsycoca6")
     refreshed=1
   elif command -v kbuildsycoca5 >/dev/null 2>&1; then
     kbuildsycoca5 --noincremental >/dev/null 2>&1 || true
+    MPM_REPAIR_ACTIONS+=("kbuildsycoca5")
     refreshed=1
   else
     warn "kbuildsycoca was not found; KDE menu may refresh on next login"

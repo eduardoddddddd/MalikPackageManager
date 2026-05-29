@@ -10,6 +10,22 @@
       "tags": ["browser", "web", "flatpak", "tested"]
     },
     {
+      "name": "Chromium",
+      "target": "org.chromium.Chromium",
+      "backend": "flatpak",
+      "source": "Flathub",
+      "summary": "Open source Chromium browser delivered as a user Flatpak.",
+      "tags": ["browser", "web", "flatpak"]
+    },
+    {
+      "name": "Thunderbird",
+      "target": "org.mozilla.Thunderbird",
+      "backend": "flatpak",
+      "source": "Flathub",
+      "summary": "Mail, calendar, and news client installed outside the host package set.",
+      "tags": ["mail", "calendar", "flatpak"]
+    },
+    {
       "name": "VLC",
       "target": "org.videolan.VLC",
       "backend": "flatpak",
@@ -66,12 +82,124 @@
       "tags": ["3d", "graphics", "flatpak"]
     },
     {
+      "name": "Kdenlive",
+      "target": "org.kde.kdenlive",
+      "backend": "flatpak",
+      "source": "Flathub",
+      "summary": "Non-linear video editor delivered through Flatpak.",
+      "tags": ["video", "editor", "kde", "flatpak"]
+    },
+    {
+      "name": "Audacity",
+      "target": "org.audacityteam.Audacity",
+      "backend": "flatpak",
+      "source": "Flathub",
+      "summary": "Audio editor and recorder installed as a user Flatpak.",
+      "tags": ["audio", "editor", "flatpak"]
+    },
+    {
+      "name": "HandBrake",
+      "target": "fr.handbrake.ghb",
+      "backend": "flatpak",
+      "source": "Flathub",
+      "summary": "Video transcoder delivered through Flatpak.",
+      "tags": ["video", "transcoding", "flatpak"]
+    },
+    {
+      "name": "KeePassXC",
+      "target": "org.keepassxc.KeePassXC",
+      "backend": "flatpak",
+      "source": "Flathub",
+      "summary": "Offline password manager delivered through Flatpak.",
+      "tags": ["security", "passwords", "flatpak"]
+    },
+    {
+      "name": "Zotero",
+      "target": "org.zotero.Zotero",
+      "backend": "flatpak",
+      "source": "Flathub",
+      "summary": "Research reference manager installed outside the host package set.",
+      "tags": ["research", "citations", "flatpak"]
+    },
+    {
+      "name": "Signal Desktop",
+      "target": "org.signal.Signal",
+      "backend": "flatpak",
+      "source": "Flathub",
+      "summary": "Encrypted messaging client delivered through Flatpak.",
+      "tags": ["chat", "privacy", "flatpak"]
+    },
+    {
+      "name": "Element",
+      "target": "im.riot.Riot",
+      "backend": "flatpak",
+      "source": "Flathub",
+      "summary": "Matrix chat client delivered through Flatpak.",
+      "tags": ["chat", "matrix", "flatpak"]
+    },
+    {
+      "name": "Discord",
+      "target": "com.discordapp.Discord",
+      "backend": "flatpak",
+      "source": "Flathub",
+      "summary": "Voice and community chat client delivered through Flatpak.",
+      "tags": ["chat", "voice", "flatpak"]
+    },
+    {
+      "name": "Steam",
+      "target": "com.valvesoftware.Steam",
+      "backend": "flatpak",
+      "source": "Flathub",
+      "summary": "Game client installed as a user Flatpak.",
+      "tags": ["games", "store", "flatpak"]
+    },
+    {
+      "name": "Heroic Games Launcher",
+      "target": "com.heroicgameslauncher.hgl",
+      "backend": "flatpak",
+      "source": "Flathub",
+      "summary": "Launcher for GOG, Epic Games, and Amazon Games libraries.",
+      "tags": ["games", "launcher", "flatpak"]
+    },
+    {
+      "name": "Flatseal",
+      "target": "com.github.tchx84.Flatseal",
+      "backend": "flatpak",
+      "source": "Flathub",
+      "summary": "Graphical permission manager for Flatpak applications.",
+      "tags": ["flatpak", "permissions", "system"]
+    },
+    {
+      "name": "Podman Desktop",
+      "target": "io.podman_desktop.PodmanDesktop",
+      "backend": "flatpak",
+      "source": "Flathub",
+      "summary": "Container management desktop app delivered through Flatpak.",
+      "tags": ["containers", "developer", "flatpak"]
+    },
+    {
+      "name": "DBeaver Community",
+      "target": "io.dbeaver.DBeaverCommunity",
+      "backend": "flatpak",
+      "source": "Flathub",
+      "summary": "Database client for SQL and NoSQL workflows.",
+      "tags": ["database", "developer", "flatpak"]
+    },
+    {
       "name": "btop",
       "target": "btop",
       "backend": "pacman",
       "source": "Arch repo",
       "summary": "Terminal system monitor; small host utility candidate.",
       "tags": ["system", "terminal", "pacman"]
+    },
+    {
+      "name": "ripgrep",
+      "target": "ripgrep",
+      "backend": "pacman",
+      "source": "Arch repo",
+      "summary": "Fast recursive search tool for local development workflows.",
+      "tags": ["developer", "terminal", "pacman"]
     }
   ]
 }

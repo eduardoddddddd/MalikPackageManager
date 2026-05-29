@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 
-VERSION = "mpm 0.17-dev"
+VERSION = "mpm 1.0.0"
 
 
 def add_source_path() -> None:
@@ -72,7 +72,17 @@ def main() -> int:
         return 0
 
     add_source_path()
-    from mpm.main import main as gui_main
+    try:
+        from mpm.main import main as gui_main
+    except ModuleNotFoundError as exc:
+        if exc.name == "PySide6":
+            print(
+                "PySide6 is not installed. Install the system package, or run "
+                "MPM_WITH_VENV=1 ./install.sh for a local venv-backed install.",
+                file=sys.stderr,
+            )
+            return 1
+        raise
     return gui_main(sys.argv[1:])
 
 

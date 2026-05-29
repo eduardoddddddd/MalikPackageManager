@@ -120,6 +120,13 @@ class CatalogValidationTests(unittest.TestCase):
         self.assertEqual(path, catalog_path)
         self.assertEqual(entries[0]["name"], "Firefox")
 
+    def test_bundled_catalog_has_1_0_baseline_size(self) -> None:
+        entries, path, error = load_catalog_entries()
+
+        self.assertIsNone(error)
+        self.assertEqual(path, ROOT / "configs" / "mpm" / "catalog.json")
+        self.assertGreaterEqual(len(entries), 25)
+
 
 if __name__ == "__main__":
     unittest.main()

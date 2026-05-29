@@ -37,7 +37,7 @@ Por tanto, cada operación debe mostrar:
 
 ---
 
-## Estado actual — 0.17-dev setup-host seguro
+## Estado actual — 1.0.0 estable local
 
 Fork autónomo de Malik Store con CLI, GUI, catálogo y búsqueda federada.
 
@@ -45,9 +45,9 @@ Fork autónomo de Malik Store con CLI, GUI, catálogo y búsqueda federada.
 
 - ✅ CLI `mpm-pkg`: `host-info`, `detect`, `explain`, `install`, `uninstall`, `history`, `doctor`, `repair-app`, `repair-desktop`, `repair-kde`
 - ✅ GUI PySide6 construible con `QT_QPA_PLATFORM=offscreen`
-- ✅ Tests locales: `134` tests pasando
-- ✅ Catálogo curado: 9 apps
-- ✅ Vendor index válido con rutas Cursor AppImage/DEB/RPM
+- ✅ Tests locales: `157` tests pasando
+- ✅ Catálogo curado: 25 apps
+- ✅ Vendor index válido con rutas Cursor, Obsidian, Bitwarden y Joplin
 - ✅ Búsqueda federada: curated, vendor, Flatpak, pacman, AUR, APT, DNF
 - ✅ `make install` instala el bridge Distrobox en instalación local
 - ✅ Config XDG: catálogo y vendor index se buscan en `XDG_CONFIG_HOME`
@@ -69,6 +69,11 @@ Fork autónomo de Malik Store con CLI, GUI, catálogo y búsqueda federada.
 - ✅ Flatpak/AppImage siguen portables y Distrobox se reporta portable con `podman` + `distrobox`
 - ✅ `mpm-open` ya no depende directamente de Konsole y detecta terminal disponible, respetando `MPM_TERMINAL`/`TERMINAL`
 - ✅ `repair-desktop` refresca integración XDG de forma agnóstica; `repair-kde` queda como alias legacy
+- ✅ Distrobox bridge devuelve manifiesto JSON para `.deb`/`.rpm` y `mpm-pkg` lo guarda en SQLite
+- ✅ Distrobox uninstall usa manifiestos cuando existen y diagnostica estados obsoletos de forma conservadora
+- ✅ Contenedores Distrobox lazy con confirmación explícita (`--create-distrobox` / `MPM_CREATE_MISSING_BOX=1`)
+- ✅ Búsqueda pacman sin sudo silencioso: si la DB no es legible, devuelve warning
+- ✅ PKGBUILD, `.SRCINFO` y CI añadidos; `make package-check` pasa localmente
 
 ### Limitaciones actuales
 
@@ -77,10 +82,9 @@ Fork autónomo de Malik Store con CLI, GUI, catálogo y búsqueda federada.
 - ⚠️ `pacman`/AUR aún ejecutan el gestor final con `--noconfirm` después de la confirmación MPM
 - ⚠️ AppImage/vendor solo puede verificar artefactos con `sha256` disponible en índice o CLI
 - ⚠️ Distrobox no es sandbox de seguridad, solo separa gestores de paquetes
-- ⚠️ Desinstalación Distrobox depende demasiado de `app_id`
 - ⚠️ `.desktop` del handler de paquetes necesita que exista alguna terminal soportada si el gestor de archivos no provee TTY
 - ⚠️ `setup-host --apply` solo ejecuta acciones no-sudo; dependencias host, AUR helper y Snapper siguen siendo manuales
-- ⚠️ Sin paquete distribuible
+- ⚠️ Publicación externa en AUR pendiente de acción explícita del mantenedor
 
 ---
 
@@ -330,7 +334,7 @@ Antes de desbloquear `--apply`:
 
 **Meta:** DEB/RPM funcionan bien sin ensuciar Arch y sin fingir sandbox de seguridad.
 
-### 0.18.1 — Bootstrap multi-distro
+### 0.18.1 — Bootstrap multi-distro ✅
 
 Separar:
 
@@ -349,7 +353,9 @@ Host package manager por distro:
 | Ubuntu/Debian | `apt` |
 | openSUSE | `zypper` |
 
-### 0.18.2 — Manifiesto desde el bridge
+Estado: completado de forma conservadora. `setup-host` recomienda dependencias por distro sin instalarlas con `sudo`; `setup-host --apply` puede crear cajas cuando `podman` y `distrobox` ya existen; installs DEB/RPM soportan creación lazy explícita con `--create-distrobox`.
+
+### 0.18.2 — Manifiesto desde el bridge ✅
 
 El bridge debe devolver JSON con:
 
@@ -367,12 +373,16 @@ El bridge debe devolver JSON con:
 
 `mpm-pkg` debe guardar ese manifiesto.
 
-### 0.18.3 — Uninstall Distrobox fiable
+Estado: completado para `install-deb` e `install-rpm`. El bridge emite `MPM_BRIDGE_MANIFEST_JSON` y, cuando `mpm-pkg` define `MPM_BRIDGE_MANIFEST`, también escribe el manifiesto en archivo para parseo robusto.
+
+### 0.18.3 — Uninstall Distrobox fiable ✅
 
 - No depender solo de `app_id` pasado por CLI
 - Usar manifiesto
 - Detectar stale records
 - Si no puede desinstalar con seguridad, explicar exactamente qué falta
+
+Estado: completado usando manifiestos guardados cuando existen, con diagnóstico conservador de launchers/export/package faltantes.
 
 ### 0.18.4 — URL bridge reversible
 
@@ -380,7 +390,7 @@ El bridge debe devolver JSON con:
 - Añadir reparación y reversión
 - Registrar si se aplicó el override
 
-### 0.18.5 — Contenedores lazy
+### 0.18.5 — Contenedores lazy ✅
 
 Crear cajas bajo demanda solo tras confirmación:
 
@@ -389,6 +399,8 @@ Contenedor mpm-ubuntu-apps no encontrado.
 Crear ahora? Descargará imagen base y compartirá el HOME del usuario. [y/N]
 ```
 
+Estado: completado para CLI no interactiva mediante `--create-distrobox`; sin ese flag, MPM se niega y explica cómo proceder.
+
 ### 0.18.6 — AppImage/Distrobox power-user
 
 - extraer el mapa de librerías faltantes de AppImage a `configs/mpm/library_maps.json`
@@ -396,14 +408,14 @@ Crear ahora? Descargará imagen base y compartirá el HOME del usuario. [y/N]
 - generar wrappers opcionales en `~/.local/bin` para apps instaladas por AppImage/Distrobox
 - no prometer sandbox: los wrappers deben indicar backend, caja y binario real
 
-### 0.18.7 — Comunicación visible de riesgos
+### 0.18.7 — Comunicación visible de riesgos ✅
 
 - mostrar en GUI/preflight que Distrobox separa gestores de paquetes pero no es sandbox de seguridad
 - indicar que las apps dentro de cajas pueden compartir HOME, sesión gráfica, D-Bus y audio según configuración
 - trasladar los warnings de `CatalogRoute`/manifiesto a la UI antes de instalar
 - no usar lenguaje que sugiera aislamiento fuerte; usar "host limpio" o "gestor aislado", no "app segura"
 
-### 0.18.8 — Búsqueda pacman sin sudo silencioso
+### 0.18.8 — Búsqueda pacman sin sudo silencioso ✅
 
 - revisar `PacmanProvider` para que no ejecute `sudo -n pacman -Ss` de forma implícita durante búsquedas
 - si la base de datos de pacman no es legible, devolver estado `warning` con acción sugerida
@@ -415,7 +427,7 @@ Crear ahora? Descargará imagen base y compartirá el HOME del usuario. [y/N]
 
 **Meta:** `yay -S mpm` instala MPM completo en Arch.
 
-### 0.19.1 — PKGBUILD
+### 0.19.1 — PKGBUILD ✅
 
 - `depends`: Python, PySide6
 - `optdepends`: Flatpak, AUR helper, Snapper, Distrobox, Podman
@@ -435,7 +447,7 @@ post_install() {
 }
 ```
 
-### 0.19.3 — CI de empaquetado
+### 0.19.3 — CI de empaquetado ✅
 
 - `make test`
 - `make validate`
@@ -443,6 +455,8 @@ post_install() {
 - validar JSON catálogo/vendor
 - `shellcheck` si está disponible
 - construcción de paquete Arch en entorno limpio
+
+Estado: CI añadida en `.github/workflows/ci.yml`; `make package-check`, `make test` y `make validate` pasan localmente.
 
 ### 0.19.4 — Hook pacman opcional
 
@@ -480,15 +494,17 @@ No debe crear Snapper, instalar AUR ni crear contenedores sin confirmación expl
 - [x] Estrategia sudo/terminal resuelta
 - [x] AppImage/vendor con SHA256 o warning bloqueante/confirmable
 - [x] Manifiestos post-install
-- [ ] Distrobox DEB/RPM con uninstall fiable
+- [x] Distrobox DEB/RPM con uninstall fiable
 - [x] `setup-host --check/--plan/--apply` seguro y conservador
-- [ ] Bootstrap Distrobox multi-distro
+- [x] Bootstrap Distrobox multi-distro
 - [x] `.desktop` sin dependencia de Konsole
-- [ ] PKGBUILD publicado en AUR
-- [ ] CI pasando
-- [ ] Catálogo ampliado a 25 apps curadas
-- [ ] Vendor index con al menos 3 apps de terceros reales
-- [ ] Documentación de usuario completa
+- [x] PKGBUILD y `.SRCINFO` listos para AUR
+- [x] CI configurada y checks locales pasando
+- [x] Catálogo ampliado a 25 apps curadas
+- [x] Vendor index con al menos 3 apps de terceros reales
+- [x] Documentación de usuario completa
+
+Pendiente externo deliberado: publicar en AUR requiere credenciales/acción explícita del mantenedor y no se automatiza desde MPM.
 
 ---
 

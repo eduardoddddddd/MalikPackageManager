@@ -83,7 +83,7 @@ def _install_command(info: HostInfo, *packages: str) -> str | None:
 
 def _pyside_package(info: HostInfo) -> str:
     return {
-        "arch": "python-pyside6",
+        "arch": "pyside6",
         "debian": "python3-pyside6.qtwidgets",
         "fedora": "python3-pyside6",
         "suse": "python3-pyside6",
@@ -203,12 +203,12 @@ def build_setup_report() -> SetupReport:
                 checks.append(SetupCheck(f"container:{name}", "ok", "exists"))
             else:
                 checks.append(SetupCheck(f"container:{name}", "missing", image))
-                actions.append(f"create box {name}: distrobox create --name {name} --image {image}")
+                actions.append(f"create box {name}: distrobox create --yes --unshare-devsys --name {name} --image {image}")
                 apply_actions.append(
                     SetupApplyAction(
                         action_id=f"create-box:{name}",
                         label=f"create box {name}",
-                        command=["distrobox", "create", "--name", name, "--image", image],
+                        command=["distrobox", "create", "--yes", "--unshare-devsys", "--name", name, "--image", image],
                     )
                 )
 

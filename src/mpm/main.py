@@ -43,19 +43,22 @@ from .catalog import load_catalog_entries
 from .catalog_providers import default_catalog_providers
 from .search import AppGroup, CatalogRoute, SearchResultSet, search_all
 from .workflow import (
+    backend_status_from_setup_report_json,
     format_catalog_detail,
+    format_discovery_only_backend_message,
     format_doctor_summary,
     format_history_detail,
     format_preflight_confirmation,
     format_uninstall_confirmation,
     infer_doctor_target,
+    is_discovery_only_backend,
     parse_history_output,
     parse_doctor_summary,
     preflight_requires_host_confirmation,
 )
 
 
-VERSION = "mpm 0.17-dev"
+VERSION = "mpm 1.0.0"
 BACKENDS = (
     ("Auto", ""),
     ("pacman", "pacman"),
@@ -151,15 +154,18 @@ class TargetLineEdit(QLineEdit):
 
 
 class MPMWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, *, auto_backend_check: bool = True) -> None:
         super().__init__()
         self.setWindowTitle("MPM")
         self.resize(1040, 720)
 
         self.mpm_pkg_path = find_mpm_pkg()
         self.process: QProcess | None = None
+        self.backend_status_process: QProcess | None = None
         self.stdout_chunks: list[str] = []
         self.stderr_chunks: list[str] = []
+        self.backend_status_stdout_chunks: list[str] = []
+        self.backend_status_stderr_chunks: list[str] = []
         self.on_success: Callable[[str], None] | None = None
         self.command_buttons: list[QPushButton] = []
         self.pending_doctor_target: str | None = None
@@ -227,7 +233,12 @@ class MPMWindow(QMainWindow):
         self.target_edit.setPlaceholderText("Package name, URL, .deb, .rpm, or .AppImage")
         self.backend_combo = QComboBox()
         for label, backend in BACKENDS:
+            if backend in {"distrobox-apt", "distrobox-dnf"}:
+                label = f"{label} (discovery only)"
             self.backend_combo.addItem(label, backend)
+        self.backend_status_labels: dict[str, QLabel] = {}
+        self.backend_status_summary = QLabel("Backend status not checked yet.")
+        self.backend_status_summary.setWordWrap(True)
         self.app_id_edit = QLineEdit()
         self.app_id_edit.setPlaceholderText("Optional app id")
         self.auto_doctor_check = QCheckBox("Doctor after install")
@@ -292,6 +303,8 @@ class MPMWindow(QMainWindow):
 
         if self.mpm_pkg_path:
             self.statusBar().showMessage(f"Using {self.mpm_pkg_path}")
+            if auto_backend_check:
+                self.refresh_backend_status()
         else:
             self.statusBar().showMessage("mpm-pkg not found")
             self.append_log("mpm-pkg was not found. Install MPM before using the GUI.\n")
@@ -363,6 +376,8 @@ class MPMWindow(QMainWindow):
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
+        layout.addWidget(self.build_backend_status_panel())
+
         form_box = QGroupBox("Target")
         form = QFormLayout(form_box)
 
@@ -393,6 +408,32 @@ class MPMWindow(QMainWindow):
         layout.addLayout(action_row)
         layout.addStretch(1)
         return tab
+
+    def build_backend_status_panel(self) -> QWidget:
+        box = QGroupBox("Backends")
+        layout = QGridLayout(box)
+        layout.setColumnStretch(1, 1)
+
+        for index, (_label, backend) in enumerate(BACKENDS):
+            if not backend:
+                continue
+            name = QLabel(backend)
+            name.setStyleSheet("font-weight: 600;")
+            status = QLabel("unknown")
+            status.setWordWrap(True)
+            status.setToolTip("Run setup-host --check --json to refresh backend readiness.")
+            self.backend_status_labels[backend] = status
+            row = (index - 1) // 2
+            column = ((index - 1) % 2) * 2
+            layout.addWidget(name, row, column)
+            layout.addWidget(status, row, column + 1)
+
+        self.backend_status_button = self.make_button("Refresh backends", QStyle.StandardPixmap.SP_BrowserReload)
+        self.backend_status_button.clicked.connect(self.refresh_backend_status)
+        row = (len(BACKENDS) + 1) // 2
+        layout.addWidget(self.backend_status_button, row, 0)
+        layout.addWidget(self.backend_status_summary, row, 1, 1, 3)
+        return box
 
     def build_installed_tab(self) -> QWidget:
         tab = QWidget()
@@ -782,11 +823,11 @@ class MPMWindow(QMainWindow):
         route = self.selected_catalog_route_entry()
         if route:
             backend = route.install_backend or route.backend
-            if backend in {"distrobox-apt", "distrobox-dnf"}:
+            if is_discovery_only_backend(backend):
                 QMessageBox.information(
                     self,
                     "Discovery only",
-                    f"{backend} routes are searchable, but install support is not implemented yet.",
+                    format_discovery_only_backend_message(backend),
                 )
                 self.append_log(
                     f"\nCatalog route skipped: {backend} is discovery-only.\n"
@@ -896,6 +937,13 @@ class MPMWindow(QMainWindow):
         if not target:
             return
         backend = self.selected_backend()
+        if is_discovery_only_backend(backend):
+            message = format_discovery_only_backend_message(backend)
+            QMessageBox.information(self, "Discovery only", message)
+            self.append_log(f"\nInstall skipped: {message}\n")
+            self.set_operation_state("idle", command=f"Install skipped: {backend} is discovery-only", exit_code="none")
+            self.statusBar().showMessage("Discovery-only backend")
+            return
         app_id = self.app_id_edit.text().strip()
         args = self.install_args(target, backend, app_id)
         self.last_install_target = target
@@ -1124,6 +1172,83 @@ class MPMWindow(QMainWindow):
             path_entries.append(current_path)
         env.insert("PATH", os.pathsep.join(path_entries))
         return env
+
+    def refresh_backend_status(self) -> None:
+        if not self.mpm_pkg_path:
+            self.backend_status_summary.setText("mpm-pkg not found.")
+            return
+        if self.backend_status_process and self.backend_status_process.state() != QProcess.ProcessState.NotRunning:
+            self.backend_status_summary.setText("Backend status refresh already running.")
+            return
+
+        self.backend_status_summary.setText("Checking backends...")
+        if hasattr(self, "backend_status_button"):
+            self.backend_status_button.setEnabled(False)
+        self.backend_status_stdout_chunks = []
+        self.backend_status_stderr_chunks = []
+        process = QProcess(self)
+        process.setProgram(self.mpm_pkg_path)
+        process.setArguments(["setup-host", "--check", "--json"])
+        process.setProcessEnvironment(self.process_environment())
+        process.readyReadStandardOutput.connect(self.read_backend_status_stdout)
+        process.readyReadStandardError.connect(self.read_backend_status_stderr)
+        process.finished.connect(self.backend_status_finished)
+        self.backend_status_process = process
+        process.start()
+        process.closeWriteChannel()
+
+    def read_backend_status_stdout(self) -> None:
+        if not self.backend_status_process:
+            return
+        text = bytes(self.backend_status_process.readAllStandardOutput()).decode(errors="replace")
+        self.backend_status_stdout_chunks.append(text)
+
+    def read_backend_status_stderr(self) -> None:
+        if not self.backend_status_process:
+            return
+        text = bytes(self.backend_status_process.readAllStandardError()).decode(errors="replace")
+        self.backend_status_stderr_chunks.append(text)
+
+    def backend_status_finished(self, exit_code: int, exit_status: QProcess.ExitStatus) -> None:
+        output = "".join(self.backend_status_stdout_chunks)
+        stderr = "".join(self.backend_status_stderr_chunks).strip()
+        ok = exit_code == 0 and exit_status == QProcess.ExitStatus.NormalExit
+        if hasattr(self, "backend_status_button"):
+            self.backend_status_button.setEnabled(True)
+        if self.backend_status_process:
+            self.backend_status_process.deleteLater()
+        self.backend_status_process = None
+
+        if not ok:
+            self.backend_status_summary.setText(stderr or f"Backend status check failed: {exit_code}")
+            return
+
+        statuses = backend_status_from_setup_report_json(output)
+        if not statuses:
+            self.backend_status_summary.setText("Backend status check returned unreadable JSON.")
+            return
+
+        counts: dict[str, int] = {}
+        for backend, label in self.backend_status_labels.items():
+            status = statuses.get(backend, {"state": "unknown", "detail": ""})
+            state = status.get("state", "unknown")
+            detail = status.get("detail", "")
+            counts[state] = counts.get(state, 0) + 1
+            label.setText(f"{state}: {detail}" if detail else state)
+            label.setToolTip(detail)
+            label.setStyleSheet(self.backend_status_style(state))
+        summary = ", ".join(f"{count} {state}" for state, count in sorted(counts.items()))
+        self.backend_status_summary.setText(f"setup-host check: {summary}")
+
+    def backend_status_style(self, state: str) -> str:
+        colors = {
+            "ok": "#1b7f3a",
+            "warning": "#8a5a00",
+            "missing": "#a12d2d",
+            "skipped": "#6b6b6b",
+            "discovery-only": "#5a4b9a",
+        }
+        return f"color: {colors.get(state, '#4f4f4f')};"
 
     def read_stdout(self) -> None:
         if not self.process:
@@ -1432,7 +1557,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     app = QApplication.instance() or QApplication(sys.argv[:1])
-    window = MPMWindow()
+    gui_self_test = any(
+        [
+            args.self_test,
+            args.self_test_drop_target,
+            args.self_test_uninstall_control,
+            args.self_test_history_control,
+        ]
+    )
+    window = MPMWindow(auto_backend_check=not gui_self_test)
     if args.self_test_drop_target:
         window.apply_dropped_target(args.self_test_drop_target, run_detect=False)
         print(window.target_edit.text())

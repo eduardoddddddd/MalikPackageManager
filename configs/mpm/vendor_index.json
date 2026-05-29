@@ -17,38 +17,153 @@
         {
           "id": "appimage-x86_64",
           "kind": "appimage",
-          "url": "https://vendor.example/Cursor.AppImage",
+          "url": "https://api2.cursor.sh/updates/download-latest?os=linux&arch=x64&format=appimage",
           "version": "latest",
           "channel": "stable",
           "arch": ["x86_64"],
           "app_id": "cursor",
-          "source": "Cursor vendor AppImage",
+          "source": "Cursor official Linux AppImage",
           "sha256": "",
           "warnings": ["Vendor terms apply."]
         },
         {
           "id": "deb-amd64",
           "kind": "deb",
-          "url": "https://vendor.example/cursor.deb",
+          "url": "https://api2.cursor.sh/updates/download-latest?os=linux&arch=x64&format=deb",
           "version": "latest",
           "channel": "stable",
           "arch": ["amd64"],
           "app_id": "cursor",
           "box": "mpm-ubuntu-apps",
-          "source": "Cursor vendor DEB",
+          "source": "Cursor official Linux DEB",
           "sha256": ""
         },
         {
           "id": "rpm-x86_64",
           "kind": "rpm",
-          "url": "https://vendor.example/cursor.rpm",
+          "url": "https://api2.cursor.sh/updates/download-latest?os=linux&arch=x64&format=rpm",
           "version": "latest",
           "channel": "stable",
           "arch": ["x86_64"],
           "app_id": "cursor",
           "box": "mpm-fedora-apps",
-          "source": "Cursor vendor RPM",
+          "source": "Cursor official Linux RPM",
           "sha256": ""
+        }
+      ]
+    },
+    {
+      "id": "obsidian",
+      "name": "Obsidian",
+      "summary": "Markdown knowledge base and local-first notes app.",
+      "description": "Official Linux downloads include AppImage and DEB packages.",
+      "homepage": "https://obsidian.md/",
+      "publisher": "Obsidian",
+      "license": "Proprietary",
+      "aliases": ["obsidian notes", "obsidian markdown"],
+      "trust": "vendor-official",
+      "update_policy": "manual",
+      "uninstall_policy": "mpm-pkg-managed-registration",
+      "routes": [
+        {
+          "id": "appimage-x86_64",
+          "kind": "appimage",
+          "url": "https://github.com/obsidianmd/obsidian-releases/releases/latest/download/Obsidian.AppImage",
+          "version": "latest",
+          "channel": "stable",
+          "arch": ["x86_64"],
+          "app_id": "obsidian",
+          "source": "Obsidian official GitHub AppImage",
+          "sha256": ""
+        },
+        {
+          "id": "deb-amd64",
+          "kind": "deb",
+          "url": "https://github.com/obsidianmd/obsidian-releases/releases/latest/download/obsidian_amd64.deb",
+          "version": "latest",
+          "channel": "stable",
+          "arch": ["amd64"],
+          "app_id": "obsidian",
+          "box": "mpm-ubuntu-apps",
+          "source": "Obsidian official GitHub DEB",
+          "sha256": ""
+        }
+      ]
+    },
+    {
+      "id": "bitwarden",
+      "name": "Bitwarden",
+      "summary": "Password manager desktop client.",
+      "description": "Vendor desktop client available for Linux as AppImage, DEB, and RPM package types.",
+      "homepage": "https://bitwarden.com/",
+      "publisher": "Bitwarden",
+      "license": "GPL-3.0-or-later",
+      "aliases": ["bitwarden desktop", "bitwarden password manager"],
+      "trust": "vendor-official",
+      "update_policy": "manual",
+      "uninstall_policy": "mpm-pkg-managed-registration",
+      "routes": [
+        {
+          "id": "appimage-x86_64",
+          "kind": "appimage",
+          "url": "https://vault.bitwarden.com/download/?app=desktop&platform=linux&variant=appimage",
+          "version": "latest",
+          "channel": "stable",
+          "arch": ["x86_64"],
+          "app_id": "bitwarden",
+          "source": "Bitwarden official Linux AppImage",
+          "sha256": ""
+        },
+        {
+          "id": "deb-amd64",
+          "kind": "deb",
+          "url": "https://vault.bitwarden.com/download/?app=desktop&platform=linux&variant=deb",
+          "version": "latest",
+          "channel": "stable",
+          "arch": ["amd64"],
+          "app_id": "bitwarden",
+          "box": "mpm-ubuntu-apps",
+          "source": "Bitwarden official Linux DEB",
+          "sha256": ""
+        },
+        {
+          "id": "rpm-x86_64",
+          "kind": "rpm",
+          "url": "https://vault.bitwarden.com/download/?app=desktop&platform=linux&variant=rpm",
+          "version": "latest",
+          "channel": "stable",
+          "arch": ["x86_64"],
+          "app_id": "bitwarden",
+          "box": "mpm-fedora-apps",
+          "source": "Bitwarden official Linux RPM",
+          "sha256": ""
+        }
+      ]
+    },
+    {
+      "id": "joplin",
+      "name": "Joplin",
+      "summary": "Open source note-taking and synchronization app.",
+      "description": "Official desktop distribution for Linux is AppImage-based through the Joplin installer workflow.",
+      "homepage": "https://joplinapp.org/",
+      "publisher": "Joplin",
+      "license": "AGPL-3.0-or-later",
+      "aliases": ["joplin notes", "joplin desktop"],
+      "trust": "vendor-official",
+      "update_policy": "manual",
+      "uninstall_policy": "mpm-pkg-managed-registration",
+      "routes": [
+        {
+          "id": "appimage-x86_64",
+          "kind": "appimage",
+          "url": "https://github.com/laurent22/joplin/releases/latest/download/Joplin.AppImage",
+          "version": "latest",
+          "channel": "stable",
+          "arch": ["x86_64"],
+          "app_id": "joplin",
+          "source": "Joplin official GitHub AppImage",
+          "sha256": "",
+          "warnings": ["Joplin recommends its installer script for managed updates; this route tracks the AppImage artifact only."]
         }
       ]
     }

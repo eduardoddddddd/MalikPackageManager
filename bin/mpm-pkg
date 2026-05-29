@@ -10,6 +10,7 @@ import shlex
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 from pathlib import Path
@@ -829,7 +830,14 @@ def install_appimage(path: Path, *, app_id: str | None, icon: str | None = None,
     }
 
 
-def install_distrobox_file(backend: str, path: Path, app_id: str | None, *, dry_run: bool) -> dict[str, object]:
+def install_distrobox_file(
+    backend: str,
+    path: Path,
+    app_id: str | None,
+    *,
+    dry_run: bool,
+    create_distrobox: bool = False,
+) -> dict[str, object]:
     script = bridge_script()
     if not script.exists():
         raise SystemExit(f"Distrobox bridge script not found: {script}")
@@ -838,9 +846,9 @@ def install_distrobox_file(backend: str, path: Path, app_id: str | None, *, dry_
     argv = [script, command, path]
     if app_id:
         argv.append(app_id)
-    run(argv, dry_run=dry_run)
     box = STANDARD_BOXES["ubuntu"] if backend == "distrobox-deb" else STANDARD_BOXES["fedora"]
-    return {
+
+    fallback_manifest: dict[str, object] = {
         "backend": backend,
         "manager": "apt" if backend == "distrobox-deb" else "dnf",
         "target": str(path),
@@ -849,6 +857,39 @@ def install_distrobox_file(backend: str, path: Path, app_id: str | None, *, dry_
         "box": box,
         "installed_files": [],
     }
+    if dry_run:
+        if create_distrobox:
+            print(f"+ env MPM_CREATE_MISSING_BOX=1 {' '.join(str(arg) for arg in argv)}")
+            print(f"would create and initialize missing Distrobox container only if absent: {box}")
+            return fallback_manifest
+        print(f"would require existing Distrobox container: {box}")
+        run(argv, dry_run=True)
+        return fallback_manifest
+
+    print("+ " + " ".join(str(arg) for arg in argv))
+    with tempfile.TemporaryDirectory(prefix="mpm-bridge-") as tmpdir:
+        manifest_path = Path(tmpdir) / "manifest.json"
+        env = os.environ.copy()
+        env["MPM_BRIDGE_MANIFEST"] = str(manifest_path)
+        if create_distrobox:
+            env["MPM_CREATE_MISSING_BOX"] = "1"
+        subprocess.run([str(arg) for arg in argv], check=True, env=env)
+        if not manifest_path.exists():
+            print("warning: Distrobox bridge did not return a manifest; recording fallback manifest", file=sys.stderr)
+            return fallback_manifest
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"warning: invalid Distrobox bridge manifest: {exc}; recording fallback manifest", file=sys.stderr)
+            return fallback_manifest
+    if not isinstance(manifest, dict):
+        print("warning: Distrobox bridge manifest was not an object; recording fallback manifest", file=sys.stderr)
+        return fallback_manifest
+    merged = {**fallback_manifest, **manifest}
+    if not isinstance(merged.get("installed_files"), list):
+        exported_desktop = str(merged.get("exported_desktop") or "")
+        merged["installed_files"] = [exported_desktop] if exported_desktop else []
+    return merged
 
 
 def normalize_token(value: str) -> str:
@@ -1607,6 +1648,24 @@ def successful_uninstall_rows_for_target(conn: sqlite3.Connection, target_or_app
     ).fetchall()
 
 
+def install_manifest_for_record(record_id: int) -> dict[str, object] | None:
+    conn = ensure_db()
+    try:
+        row = conn.execute(
+            "SELECT manifest_json FROM install_manifests WHERE install_id = ?",
+            (record_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    try:
+        manifest = json.loads(str(row[0]))
+    except json.JSONDecodeError:
+        return None
+    return manifest if isinstance(manifest, dict) else None
+
+
 def resolve_install_record(target_or_record_id: str) -> InstallRecord:
     conn = ensure_db()
     try:
@@ -1750,7 +1809,143 @@ def package_installed_in_box(box: str, family: str | None, candidates: list[str]
     return None
 
 
+def manifest_text(manifest: dict[str, object], key: str) -> str | None:
+    value = manifest.get(key)
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def package_name_from_distrobox_manifest(manifest: dict[str, object]) -> str | None:
+    package_name = manifest_text(manifest, "real_package") or manifest_text(manifest, "package")
+    if not package_name:
+        return None
+    if package_name.endswith((".deb", ".rpm")) or "/" in package_name:
+        return None
+    return package_name
+
+
+def app_id_from_distrobox_manifest(manifest: dict[str, object], box: str, record: InstallRecord) -> str | None:
+    app_id = manifest_text(manifest, "app_id") or record.app_id
+    if app_id:
+        return app_id[:-8] if app_id.endswith(".desktop") else app_id
+    desktop_id = manifest_text(manifest, "desktop_id")
+    if desktop_id and desktop_id.startswith(f"{box}-") and desktop_id.endswith(".desktop"):
+        return desktop_id[len(box) + 1 : -len(".desktop")]
+    return None
+
+
+def exported_desktop_from_manifest(manifest: dict[str, object]) -> Path | None:
+    exported_desktop = manifest_text(manifest, "exported_desktop")
+    if exported_desktop:
+        return Path(exported_desktop).expanduser()
+    desktop_id = manifest_text(manifest, "desktop_id")
+    if not desktop_id:
+        return None
+    for directory in desktop_search_dirs():
+        candidate = directory / desktop_id
+        if candidate.exists():
+            return candidate
+    return xdg_data_home() / "applications" / desktop_id
+
+
+def podman_container_exists(box: str) -> bool | None:
+    return command_succeeds(["podman", "container", "exists", box])
+
+
+def plan_distrobox_uninstall_from_manifest(record: InstallRecord, manifest: dict[str, object]) -> UninstallPlan:
+    box = manifest_text(manifest, "box")
+    if not box:
+        raise SystemExit("stale-state: Distrobox manifest is missing critical field: box; refusing uninstall")
+
+    package_name = package_name_from_distrobox_manifest(manifest)
+    if not package_name:
+        raise SystemExit(
+            "stale-state: Distrobox manifest does not contain a removable package name "
+            "(expected real_package/package); refusing uninstall"
+        )
+
+    app_id = app_id_from_distrobox_manifest(manifest, box, record)
+    if not app_id:
+        raise SystemExit(
+            "stale-state: Distrobox manifest is missing app_id and cannot derive it from desktop_id; "
+            "refusing uninstall"
+        )
+
+    family = manifest_text(manifest, "distro") or box_family(box)
+    if family not in {"ubuntu", "debian", "fedora"}:
+        raise SystemExit(f"stale-state: Distrobox manifest has unknown distro/package family: {family or 'unknown'}")
+
+    box_exists = podman_container_exists(box)
+    if box_exists is False:
+        raise SystemExit(f"stale-state: Distrobox manifest box is missing: {box}; refusing uninstall")
+
+    desktop_file = exported_desktop_from_manifest(manifest)
+    desktop_present = bool(desktop_file and desktop_file.exists())
+    diagnostics = [
+        "state-check: using saved Distrobox install manifest",
+        f"manifest-box: {box}",
+        f"manifest-package: {package_name}",
+    ]
+    if box_exists is None:
+        diagnostics.append("state-check: podman command not available; cannot verify Distrobox container existence")
+    else:
+        diagnostics.append("state-check: Distrobox container exists")
+
+    if not desktop_present:
+        installed_package = package_installed_in_box(box, family, [package_name])
+        if installed_package:
+            raise SystemExit(
+                "stale-state: Distrobox manifest exported desktop is missing: "
+                f"{desktop_file or manifest_text(manifest, 'desktop_id') or 'unknown'}; "
+                f"package still appears installed: {installed_package}; refusing uninstall"
+            )
+        raise SystemExit(
+            "stale-state: Distrobox manifest exported desktop is missing and package presence cannot be verified; "
+            f"desktop: {desktop_file or manifest_text(manifest, 'desktop_id') or 'unknown'}; refusing uninstall"
+        )
+    diagnostics.append(f"state-check: exported desktop exists: {desktop_file}")
+
+    commands = [
+        [
+            "distrobox",
+            "enter",
+            "--name",
+            box,
+            "--",
+            "distrobox-export",
+            "--app",
+            app_id,
+            "--delete",
+        ],
+        [
+            "distrobox",
+            "enter",
+            "--name",
+            box,
+            "--",
+            "bash",
+            "-lc",
+            distrobox_remove_package_command(family, package_name),
+        ],
+    ]
+    notes = [
+        "backend: Distrobox exported app",
+        "source: saved install manifest",
+        f"box: {box}",
+        f"app-id: {app_id}",
+        f"package: {package_name}",
+        "uses package remove, not purge; user config/data is preserved",
+    ]
+    return UninstallPlan(record=record, commands=commands, notes=notes, diagnostics=diagnostics)
+
+
 def plan_distrobox_uninstall(record: InstallRecord) -> UninstallPlan:
+    manifest = install_manifest_for_record(record.id)
+    if manifest:
+        return plan_distrobox_uninstall_from_manifest(record, manifest)
+
     if not record.app_id:
         raise SystemExit(
             "cannot safely uninstall Distrobox record without app_id; "
@@ -1963,14 +2158,23 @@ def install_target(args: argparse.Namespace) -> None:
     elif backend == "flatpak":
         manifest = install_flatpak(target, dry_run=args.dry_run)
     elif backend in {"distrobox-deb", "distrobox-rpm"}:
-        manifest = install_distrobox_file(backend, actual_target, app_id, dry_run=args.dry_run)
+        manifest = install_distrobox_file(
+            backend,
+            actual_target,
+            app_id,
+            dry_run=args.dry_run,
+            create_distrobox=args.create_distrobox,
+        )
     elif backend == "appimage":
         manifest = install_appimage(actual_target, app_id=app_id, icon=icon, dry_run=args.dry_run)
     else:
         raise SystemExit(f"backend is not installable yet: {backend}")
 
     if not args.dry_run:
-        install_id = record_install(str(target), backend, kind, source, app_id)
+        recorded_app_id = app_id
+        if manifest and manifest.get("app_id"):
+            recorded_app_id = str(manifest["app_id"])
+        install_id = record_install(str(target), backend, kind, source, recorded_app_id)
         if manifest:
             if expected_sha256:
                 manifest["sha256"] = expected_sha256
@@ -2128,7 +2332,7 @@ def print_history() -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=APP_NAME)
-    parser.add_argument("--version", action="version", version="mpm-pkg 0.17-dev")
+    parser.add_argument("--version", action="version", version="mpm-pkg 1.0.0")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     host_info_parser = subparsers.add_parser("host-info", help="show detected host capabilities")
@@ -2157,6 +2361,11 @@ def build_parser() -> argparse.ArgumentParser:
     install_parser.add_argument("--icon", help="desktop icon name/path to use for AppImage launchers")
     install_parser.add_argument("--dry-run", action="store_true")
     install_parser.add_argument("--yes", action="store_true", help="confirm host install after reviewing dry-run preflight")
+    install_parser.add_argument(
+        "--create-distrobox",
+        action="store_true",
+        help="for DEB/RPM installs, explicitly create and initialize the missing app container if absent",
+    )
     install_parser.add_argument(
         "--no-snapshot",
         action="store_true",

@@ -9,11 +9,14 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from mpm.workflow import (  # noqa: E402
+    backend_status_from_setup_report_json,
     format_catalog_detail,
+    format_discovery_only_backend_message,
     format_history_detail,
     format_preflight_confirmation,
     format_uninstall_confirmation,
     infer_doctor_target,
+    is_discovery_only_backend,
     preflight_requires_host_confirmation,
     parse_history_output,
     parse_doctor_summary,
@@ -127,6 +130,62 @@ class WorkflowHelperTests(unittest.TestCase):
         self.assertIn("Backend: aur", text)
         self.assertIn("Snapshot: planned: Snapper root snapshot", text)
         self.assertIn("Review the PKGBUILD", text)
+
+    def test_format_preflight_confirmation_warns_for_distrobox_boundaries(self) -> None:
+        text = format_preflight_confirmation(
+            "https://vendor.example/cool.deb",
+            "distrobox-deb",
+            "\n".join(
+                [
+                    "target: https://vendor.example/cool.deb",
+                    "source: url",
+                    "kind: deb",
+                    "backend: distrobox-deb",
+                    "reason: DEB install through Distrobox.",
+                ]
+            ),
+            "mpm-pkg install https://vendor.example/cool.deb --backend distrobox-deb",
+        )
+
+        self.assertIn("Distrobox risk:", text)
+        self.assertIn("not a strong sandbox", text)
+        self.assertIn("HOME, graphical session, D-Bus, and audio", text)
+
+    def test_discovery_only_backend_message_is_explicit(self) -> None:
+        self.assertTrue(is_discovery_only_backend("distrobox-apt"))
+        self.assertFalse(is_discovery_only_backend("distrobox-deb"))
+        self.assertIn("discovery-only", format_discovery_only_backend_message("distrobox-dnf"))
+        self.assertIn("distrobox-deb and distrobox-rpm", format_discovery_only_backend_message("distrobox-dnf"))
+
+    def test_backend_status_from_setup_report_json_maps_gui_backends(self) -> None:
+        statuses = backend_status_from_setup_report_json(
+            """
+            {
+              "mode": "check",
+              "host": {
+                "host_family": "debian",
+                "host_backends": [],
+                "portable_backends": ["flatpak", "appimage", "distrobox"]
+              },
+              "checks": [
+                {"name": "flatpak", "state": "ok", "detail": "/bin/flatpak"},
+                {"name": "podman", "state": "ok", "detail": "/bin/podman"},
+                {"name": "distrobox", "state": "ok", "detail": "/bin/distrobox"},
+                {"name": "aur-helper", "state": "skipped", "detail": "AUR is Arch-only"},
+                {"name": "container:mpm-ubuntu-apps", "state": "ok", "detail": "exists"},
+                {"name": "container:mpm-fedora-apps", "state": "missing", "detail": "fedora:latest"}
+              ],
+              "actions": []
+            }
+            """
+        )
+
+        self.assertEqual(statuses["flatpak"]["state"], "ok")
+        self.assertEqual(statuses["pacman"]["state"], "missing")
+        self.assertEqual(statuses["aur"]["state"], "skipped")
+        self.assertEqual(statuses["distrobox-deb"]["state"], "ok")
+        self.assertEqual(statuses["distrobox-rpm"]["state"], "warning")
+        self.assertEqual(statuses["distrobox-apt"]["state"], "discovery-only")
 
     def test_format_catalog_detail_keeps_delegation_text(self) -> None:
         text = format_catalog_detail(

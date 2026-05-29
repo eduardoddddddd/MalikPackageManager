@@ -436,7 +436,7 @@ class CatalogProviderTests(unittest.TestCase):
 
         self.assertIsNone(error)
         self.assertEqual(path, ROOT / "configs" / "mpm" / "vendor_index.json")
-        self.assertGreaterEqual(len(entries), 1)
+        self.assertGreaterEqual(len(entries), 3)
 
     def test_load_vendor_index_entries_uses_xdg_config_home(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -514,24 +514,17 @@ class CatalogProviderTests(unittest.TestCase):
         self.assertTrue(routes[0].requires_snapshot)
         self.assertEqual(routes[0].install_target, "btop")
 
-    def test_pacman_provider_falls_back_to_passwordless_sudo_when_local_db_is_unreadable(self) -> None:
+    def test_pacman_provider_warns_without_sudo_when_local_db_is_unreadable(self) -> None:
         calls: list[list[str]] = []
 
         def runner(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
             argv = list(args[0])
             calls.append(argv)
-            if argv[:2] == ["pacman", "-Ss"]:
-                return subprocess.CompletedProcess(
-                    args=argv,
-                    returncode=1,
-                    stdout="",
-                    stderr="error: failed to initialize alpm library:\ncould not open database\n",
-                )
             return subprocess.CompletedProcess(
                 args=argv,
-                returncode=0,
-                stdout="extra/btop 1.4.7-1 [installed]\n    A monitor of resources\n",
-                stderr="",
+                returncode=1,
+                stdout="",
+                stderr="error: failed to initialize alpm library:\ncould not open database\n",
             )
 
         provider = PacmanProvider(runner=runner)
@@ -541,9 +534,10 @@ class CatalogProviderTests(unittest.TestCase):
             routes = provider.search("btop")
 
         self.assertEqual(calls[0], ["pacman", "-Ss", "btop"])
-        self.assertEqual(calls[1], ["sudo", "-n", "pacman", "-Ss", "btop"])
-        self.assertEqual(len(routes), 1)
-        self.assertEqual(routes[0].install_target, "btop")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(routes, [])
+        self.assertEqual(provider.last_status.state, "warning")
+        self.assertIn("not readable", provider.last_status.message)
 
     def test_aur_provider_maps_rpc_json_to_routes(self) -> None:
         payload = (FIXTURES / "aur_rpc_search_cursor.json").read_text(encoding="utf-8")

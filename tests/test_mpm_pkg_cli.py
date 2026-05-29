@@ -123,6 +123,56 @@ def create_success_uninstall_record(xdg_data_home: Path, install_id: int, *, tar
         conn.close()
 
 
+def create_install_manifest(xdg_data_home: Path, install_id: int, manifest: dict[str, object]) -> None:
+    db = xdg_data_home / "mpm" / "mpm-pkg" / "installed.sqlite"
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS install_manifests (
+              install_id INTEGER PRIMARY KEY,
+              backend TEXT NOT NULL,
+              manager TEXT NOT NULL,
+              target TEXT NOT NULL,
+              real_package TEXT,
+              app_id TEXT,
+              desktop_id TEXT,
+              box TEXT,
+              version TEXT,
+              installed_files_json TEXT NOT NULL DEFAULT '[]',
+              manifest_json TEXT NOT NULL,
+              created_at INTEGER NOT NULL
+            )
+            """,
+        )
+        payload = json.dumps(manifest, sort_keys=True)
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO install_manifests
+                  (install_id, backend, manager, target, real_package, app_id, desktop_id, box,
+                   version, installed_files_json, manifest_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    install_id,
+                    str(manifest.get("backend") or "distrobox-deb"),
+                    str(manifest.get("manager") or "apt"),
+                    str(manifest.get("target") or ""),
+                    manifest.get("real_package"),
+                    manifest.get("app_id"),
+                    manifest.get("desktop_id"),
+                    manifest.get("box"),
+                    manifest.get("version"),
+                    "[]",
+                    payload,
+                    int(time.time()),
+                ),
+            )
+    finally:
+        conn.close()
+
+
 def write_executable(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
     path.chmod(0o755)
@@ -500,7 +550,7 @@ class MalikpkgCliTests(unittest.TestCase):
         self.assertIn("manual-actions:", output)
         self.assertIn("install PySide6:", output)
         self.assertIn("flatpak remote-add --if-not-exists flathub", commands)
-        self.assertIn("distrobox create --name mpm-ubuntu-apps", commands)
+        self.assertIn("distrobox create --yes --unshare-devsys --name mpm-ubuntu-apps", commands)
         self.assertNotIn("apt install", commands)
         self.assertNotIn("sudo", commands)
 
@@ -727,6 +777,79 @@ class MalikpkgCliTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("sha256 mismatch", result.stderr)
 
+    def test_distrobox_install_records_bridge_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            source = tmp / "Cool App.deb"
+            source.write_bytes(b"deb payload")
+            bridge = tmp / "fake-bridge.sh"
+            bridge.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+cat > "$MPM_BRIDGE_MANIFEST" <<'JSON'
+{
+  "backend": "distrobox-deb",
+  "manager": "apt",
+  "box": "mpm-ubuntu-apps",
+  "distro": "ubuntu",
+  "package": "Cool App.deb",
+  "real_package": "cool-app",
+  "target": "/tmp/Cool App.deb",
+  "copied_package": "/tmp/mpm-bridge-Cool App.deb",
+  "app_id": "cool-app",
+  "desktop_id": "mpm-ubuntu-apps-cool-app.desktop",
+  "exported_desktop": "/home/test/.local/share/applications/mpm-ubuntu-apps-cool-app.desktop",
+  "repair_actions": ["update-desktop-database"],
+  "url_bridge_override": false,
+  "warnings": ["test warning"]
+}
+JSON
+printf 'fake bridge installed %s\\n' "$2"
+""",
+                encoding="utf-8",
+            )
+            bridge.chmod(0o755)
+            xdg_data_home = tmp / "xdg"
+
+            output = run_mpm_pkg_env(
+                {"XDG_DATA_HOME": str(xdg_data_home), "MPM_DISTROBOX_BRIDGE": str(bridge)},
+                "install",
+                str(source),
+                "--backend",
+                "distrobox-deb",
+            )
+            history = run_mpm_pkg_env({"XDG_DATA_HOME": str(xdg_data_home)}, "history")
+            installed = run_mpm_pkg_env({"XDG_DATA_HOME": str(xdg_data_home)}, "list-installed")
+
+        self.assertIn("fake bridge installed", output)
+        self.assertIn('"manager": "apt"', history)
+        self.assertIn('"box": "mpm-ubuntu-apps"', history)
+        self.assertIn('"real_package": "cool-app"', history)
+        self.assertIn('"desktop_id": "mpm-ubuntu-apps-cool-app.desktop"', history)
+        self.assertIn('"warnings": ["test warning"]', history)
+        self.assertIn("cool-app", installed)
+
+    def test_distrobox_install_dry_run_shows_explicit_lazy_container_flow(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            source = tmp / "Cool App.deb"
+            bridge = tmp / "fake-bridge.sh"
+            bridge.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            bridge.chmod(0o755)
+
+            output = run_mpm_pkg_env(
+                {"XDG_DATA_HOME": str(tmp / "xdg"), "MPM_DISTROBOX_BRIDGE": str(bridge)},
+                "install",
+                str(source),
+                "--backend",
+                "distrobox-deb",
+                "--dry-run",
+                "--create-distrobox",
+            )
+
+        self.assertIn("MPM_CREATE_MISSING_BOX=1", output)
+        self.assertIn("would create and initialize missing Distrobox container only if absent: mpm-ubuntu-apps", output)
+
     def test_flatpak_uninstall_dry_run_preserves_user_data(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             record_id = create_install_record(
@@ -840,6 +963,128 @@ class MalikpkgCliTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("cannot safely uninstall Distrobox record without app_id", result.stderr)
+
+    def test_distrobox_uninstall_uses_saved_manifest_without_record_app_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            fake_bin = tmp / "bin"
+            fake_bin.mkdir()
+            write_executable(fake_bin / "podman", "#!/bin/sh\nexit 0\n")
+            desktop = tmp / "applications" / "mpm-ubuntu-apps-cool-app.desktop"
+            desktop.parent.mkdir()
+            desktop.write_text(
+                "[Desktop Entry]\nType=Application\nName=Cool\nExec=distrobox enter mpm-ubuntu-apps -- cool-app\n",
+                encoding="utf-8",
+            )
+            record_id = create_install_record(
+                tmp,
+                target="/tmp/cool.deb",
+                backend="distrobox-deb",
+                kind="deb",
+                source="file",
+            )
+            create_install_manifest(
+                tmp,
+                record_id,
+                {
+                    "backend": "distrobox-deb",
+                    "manager": "apt",
+                    "box": "mpm-ubuntu-apps",
+                    "distro": "ubuntu",
+                    "real_package": "cool-app",
+                    "target": "/tmp/cool.deb",
+                    "app_id": "cool-app",
+                    "desktop_id": desktop.name,
+                    "exported_desktop": str(desktop),
+                },
+            )
+
+            output = run_mpm_pkg_env(
+                {"XDG_DATA_HOME": tmpdir, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+                "uninstall",
+                "--dry-run",
+                str(record_id),
+            )
+
+        self.assertIn("source: saved install manifest", output)
+        self.assertIn("distrobox enter --name mpm-ubuntu-apps -- distrobox-export --app cool-app --delete", output)
+        self.assertIn("sudo DEBIAN_FRONTEND=noninteractive apt-get remove -y cool-app", output)
+
+    def test_distrobox_uninstall_refuses_manifest_missing_box(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            record_id = create_install_record(
+                tmp,
+                target="/tmp/cool.deb",
+                backend="distrobox-deb",
+                kind="deb",
+                source="file",
+            )
+            create_install_manifest(
+                tmp,
+                record_id,
+                {
+                    "backend": "distrobox-deb",
+                    "manager": "apt",
+                    "real_package": "cool-app",
+                    "app_id": "cool-app",
+                    "desktop_id": "mpm-ubuntu-apps-cool-app.desktop",
+                },
+            )
+
+            result = run_mpm_pkg_failure({"XDG_DATA_HOME": tmpdir}, "uninstall", "--dry-run", str(record_id))
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Distrobox manifest is missing critical field: box", result.stderr)
+
+    def test_distrobox_uninstall_refuses_manifest_missing_exported_desktop_with_package_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            fake_bin = tmp / "bin"
+            fake_bin.mkdir()
+            write_executable(fake_bin / "podman", "#!/bin/sh\nexit 0\n")
+            write_executable(
+                fake_bin / "distrobox",
+                """#!/bin/sh
+script="$7"
+case "$script" in
+  *'dpkg -s'*) printf 'cool-app\n'; exit 0 ;;
+  *) exit 0 ;;
+esac
+""",
+            )
+            record_id = create_install_record(
+                tmp,
+                target="/tmp/cool.deb",
+                backend="distrobox-deb",
+                kind="deb",
+                source="file",
+            )
+            create_install_manifest(
+                tmp,
+                record_id,
+                {
+                    "backend": "distrobox-deb",
+                    "manager": "apt",
+                    "box": "mpm-ubuntu-apps",
+                    "distro": "ubuntu",
+                    "real_package": "cool-app",
+                    "app_id": "cool-app",
+                    "desktop_id": "mpm-ubuntu-apps-cool-app.desktop",
+                    "exported_desktop": str(tmp / "applications" / "mpm-ubuntu-apps-cool-app.desktop"),
+                },
+            )
+
+            result = run_mpm_pkg_failure(
+                {"XDG_DATA_HOME": tmpdir, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+                "uninstall",
+                "--dry-run",
+                str(record_id),
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Distrobox manifest exported desktop is missing", result.stderr)
+        self.assertIn("package still appears installed: cool-app", result.stderr)
 
     def test_distrobox_uninstall_refuses_unmapped_exported_launcher(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
